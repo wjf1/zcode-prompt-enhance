@@ -1,0 +1,18 @@
+# 本地配置（含 asar 路径等本机差异），不入库
+config.json
+
+# asar 工具装在这里，不入库
+.asar-tools/
+
+# 探针产物
+tools/probe-out.jsonl
+tools/live-out.jsonl
+tools/mismatch-out.json
+tools/*.log
+
+# 备份
+*.bak
+*.bak-*
+app.asar.bak-*
+
+node_modules/

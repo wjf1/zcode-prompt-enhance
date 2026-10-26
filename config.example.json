@@ -1,0 +1,12 @@
+{
+  "_comment": "复制为 config.json 后按本机情况调整。留空则走 provider_config.json 的第一条可用 anthropic-messages 路由。max_input_chars 超限时拒绝（不截断）。",
+  "provider": "",
+  "model": "",
+  "max_input_chars": 12000,
+  "timeout_ms": 60000,
+  "hot_reload": true,
+  "context_enabled": false,
+  "context_max_messages": 8,
+  "context_max_chars": 4000,
+  "asar_path": ""
+}

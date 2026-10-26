@@ -1,0 +1,20 @@
+{
+  "name": "zcode-prompt-enhance",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZCode Desktop 提示词增强：在聊天输入框旁加 ✨ 按钮，一键把草稿改写成结构化提示词（asar 注入实现）",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "patch": "node repatch_asar.mjs",
+    "patch:dry": "node repatch_asar.mjs --dry-run",
+    "patch:check": "node repatch_asar.mjs --check",
+    "uninstall": "node uninstall.mjs",
+    "e2e": "node tools/e2e-model.mjs",
+    "probe:model": "node tools/probe-model.mjs"
+  },
+  "dependencies": {}
+}
