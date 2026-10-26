@@ -83,8 +83,10 @@ function pathToFileUrl(p) {
 }
 
 /* ---------------- provider 路由（带 mtime 缓存） ---------------- */
-let routeCache = { at: 0, cfgPath: "", route: null };
-async function currentRoute() {
+/* 路由缓存：按 provider_config.json 的 mtime + config.json 的 mtime + 会话模型标签 三段键。
+ * 会话模型会随用户切换而变，缓存键必须带上它，否则切了模型还在用旧路由。 */
+let routeCache = { key: "", route: null, source: "" };
+async function currentRoute(sessionModelLabel) {
   const { provider } = await loadCore();
   const cfgPath = provider.defaultConfigPath();
   let mtime = 0;
@@ -93,14 +95,21 @@ async function currentRoute() {
   } catch {
     return { route: null, reason: "provider_config.json 不可读" };
   }
-  if (routeCache.at === mtime && routeCache.cfgPath === cfgPath) {
-    return { route: routeCache.route, reason: routeCache.route ? "" : "no-route" };
-  }
-  const pcfg = provider.loadProviderConfig(cfgPath);
   const c = readCfg();
-  const route = provider.resolveRoute(pcfg, { provider: c.provider, model: c.model });
-  routeCache = { at: mtime, cfgPath, route };
-  return { route, reason: route ? "" : "没有可用的 anthropic-messages provider" };
+  const label = typeof sessionModelLabel === "string" ? sessionModelLabel : "";
+  const key = mtime + "|" + cfgMtime + "|" + c.provider + "|" + c.model + "|" + label;
+  if (routeCache.key === key) {
+    return { route: routeCache.route, source: routeCache.source, reason: routeCache.route ? "" : "no-route" };
+  }
+
+  const pcfg = provider.loadProviderConfig(cfgPath);
+  const route = provider.resolveRoute(pcfg, {
+    provider: c.provider,
+    model: c.model,
+    sessionModelLabel: label,
+  });
+  routeCache = { key, route, source: route ? route.source : "" };
+  return { route, source: route ? route.source : "", reason: route ? "" : "没有可用的 anthropic-messages provider" };
 }
 
 /* ---------------- 闸门 ---------------- */
@@ -156,7 +165,7 @@ function startBridge() {
       const { route } = await currentRoute().catch(() => ({ route: null }));
       return json(res, 200, {
         ok: true,
-        version: "0.1.0",
+        version: "0.2.0",
         model: route ? route.model : null,
         provider: route ? route.providerName : null,
         maxInputChars: readCfg().max_input_chars,
@@ -198,8 +207,12 @@ function startBridge() {
       return res.end(body);
     }
 
-    const { route, reason } = await currentRoute();
+    // 会话模型标签：渲染端从工具行模型按钮读出，主进程据此实时跟随；
+    // 缺失或反查失败都会安静回落到 config.json 的默认路由，不影响功能
+    const sessionLabel = typeof payload?.sessionModelLabel === "string" ? payload.sessionModelLabel.slice(0, 200) : "";
+    const { route, reason, source } = await currentRoute(sessionLabel);
     if (!route) return json(res, 503, { code: "unsupported", detail: reason });
+    LOG("enhance route:", source, "→", route.providerName + "/" + route.model);
 
     const release = gates.acquire();
     const callerAbort = new AbortController();
@@ -222,20 +235,56 @@ function startBridge() {
         "x-accel-buffering": "no",
       });
 
-      const result = await enhancer.enhanceDraft({
-        route,
-        draft,
-        context: c.context_enabled ? payload?.context : undefined,
-        signal: callerAbort.signal,
-        timeoutMs: c.timeout_ms,
-        onProgress: (text) => {
-          if (res.writableEnded) return;
-          res.write(JSON.stringify({ type: "progress", text }) + "\n");
-        },
-      });
+      const runOnce = (rt) =>
+        enhancer.enhanceDraft({
+          route: rt,
+          draft,
+          context: c.context_enabled ? payload?.context : undefined,
+          signal: callerAbort.signal,
+          timeoutMs: c.timeout_ms,
+          onProgress: (text) => {
+            if (res.writableEnded) return;
+            res.write(JSON.stringify({ type: "progress", text }) + "\n");
+          },
+        });
+
+      let finalRoute = route;
+      let finalSource = source;
+      let result;
+      try {
+        result = await runOnce(route);
+      } catch (err) {
+        /* 跟随会话模型失败时的自动回落：
+         * 真机实测——会话切换到的 provider 可能额度耗尽 / 网络不可达，
+         * 此时整次增强会直接失败，用户会觉得"点了没反应"。
+         * 只要不是用户主动取消，就用默认路由再试一次（仅一次，避免重复烧额度）。 */
+        const code = (err && err.code) || "internal";
+        const fallbackable =
+          source === "follow-session" &&
+          !callerAbort.signal.aborted &&
+          ["internal", "quota", "auth", "invalid-credential", "rate-limit", "unsupported", "timeout"].includes(code);
+        if (!fallbackable) throw err;
+
+        const fb = await currentRoute(""); // 空标签 = 不跟随，走 config 默认
+        if (!fb.route || fb.route.providerId + fb.route.model === route.providerId + route.model) throw err;
+        LOG("follow-session failed (" + code + "), falling back to default:", fb.route.providerName + "/" + fb.route.model);
+        finalRoute = fb.route;
+        finalSource = "fallback-after-follow";
+        result = await runOnce(fb.route);
+      }
 
       gates.recordSuccess();
-      res.write(JSON.stringify({ type: "done", text: result.text, usage: result.usage || null }) + "\n");
+      res.write(
+        JSON.stringify({
+          type: "done",
+          text: result.text,
+          usage: result.usage || null,
+          // 回传实际使用的路由，供浮层显示"用的是哪个模型"以及是否发生过回落
+          model: finalRoute.model,
+          providerName: finalRoute.providerName,
+          routeSource: finalSource,
+        }) + "\n"
+      );
       res.end();
     } catch (err) {
       const code = (err && err.code) || "internal";
@@ -281,7 +330,7 @@ function bootSource() {
     port: bridgePort,
     token: BRIDGE_TOKEN,
     maxInputChars: c.max_input_chars,
-    version: "0.1.0",
+    version: "0.2.0",
   };
   return "window.__ZPE_BOOT__=" + JSON.stringify(boot) + ";\n" + overlaySrc;
 }
@@ -356,4 +405,41 @@ setInterval(() => {
   hotReload();
 }, 2000);
 
-LOG("injected v0.1.0 (local bridge + Lexical setEditorState writer + gates)");
+/* 主进程侧文件变更检测：overlay 能热更新，但 inject-main.cjs 与 core/*.mjs 不能
+ * （它们已经加载进 V8，改文件不会重新执行）。这里只负责"告诉用户需要重启"，
+ * 否则改了主进程代码的人会以为改动生效了，实际还在跑旧逻辑 —— 这是本轮实际踩到的坑。 */
+let mainMtimeSnapshot = null;
+function mainFileStamp() {
+  let stamp = 0;
+  const files = [
+    path.join(HERE, "inject-main.cjs"),
+    path.join(HERE, "core", "prompt.mjs"),
+    path.join(HERE, "core", "provider.mjs"),
+    path.join(HERE, "core", "enhancer.mjs"),
+    path.join(HERE, "core", "diff.mjs"),
+    path.join(HERE, "core", "gates.mjs"),
+  ];
+  for (const f of files) {
+    try {
+      stamp = Math.max(stamp, fs.statSync(f).mtimeMs);
+    } catch {}
+  }
+  return stamp;
+}
+mainMtimeSnapshot = mainFileStamp();
+setInterval(() => {
+  const now = mainFileStamp();
+  if (now > mainMtimeSnapshot) {
+    mainMtimeSnapshot = now;
+    LOG("主进程代码已变更（inject-main.cjs 或 core/*.mjs）—— 需要重启 ZCode 才能生效");
+    for (const wc of webContents.getAllWebContents()) {
+      if (!isMainWindow(wc) || wc.isDestroyed()) continue;
+      wc.executeJavaScript(
+        '(function(){try{window.__zpeNotifyRestartNeeded&&window.__zpeNotifyRestartNeeded();}catch(e){}})()',
+        true
+      ).catch(() => {});
+    }
+  }
+}, 3000);
+
+LOG("injected v0.2.0 (local bridge + Lexical setEditorState writer + gates + session-model follow)");

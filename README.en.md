@@ -87,27 +87,50 @@ node repatch_asar.mjs
 Step 4 installs `@electron/asar` automatically (~20 s), then unpacks → backs up → appends → repacks → swaps
 (1–3 min). A running ZCode holds the file handle, so **you must quit it first**.
 
-### Choose the enhancement model
+### Which model does it use
 
-Edit `config.json`:
+**It follows the model currently selected in the conversation by default** — switch the model in the
+bottom-right of the composer, and ✨ enhances with that same model.
+
+Detection works by reading the model button's label text in the composer toolbar and matching it against
+the real model list in `provider_config.json` ("is a known model id contained in this label"). Model names
+are never parsed out by splitting on separators, because ids may themselves contain `/`
+(`meta/muse-spark-1.3`, `deepseek/deepseek-v4.1-flash`). Suffixes like "high / medium" for reasoning
+effort do not affect the match.
+
+**A failed follow-up falls back automatically** — the feature never breaks:
+
+| Situation | Behaviour |
+|---|---|
+| Session model exists in `provider_config.json` with an API key | Enhance with that exact model |
+| That provider is out of quota / auth fails / unreachable / times out | Retry once with the default model and show "session model unavailable, switched to …" |
+| Subscription or OAuth provider (no API key in config) | Fall back to the default model |
+| UI change makes the label unreadable, or the match is ambiguous | Fall back to the default model |
+
+After success the overlay reports the model actually used, e.g. "enhanced with session model:
+cn:deepseek-v4.1-flash".
+
+To pin a specific model (and stop following), set `provider` and `model` in `config.json`;
+leave both empty to follow.
 
 ```json
 {
-  "provider": "new-provider-2",
-  "model": "cn:deepseek-v4.1-flash",
+  "provider": "",
+  "model": "",
   "max_input_chars": 12000,
   "timeout_ms": 60000
 }
 ```
 
-Leaving `provider` and `model` empty picks the first usable route from
-`~/.zcode/v2/provider_config.json` by `providerOrder`. Both fields are whitelist-validated; if either is
-malformed the whole pair falls back to the default, so a malformed request body can never be built.
+> ⚠️ Note: values in `config.json` are only the **defaults** — a successful follow still wins.
+> To pin the enhancer to one model, switch the conversation to that model as well, or accept the
+> fallback value.
 
-Check which model it would pick (this makes a real API call and prints the result):
+Inspect what it would follow:
 
 ```bash
-node tools/e2e-model.mjs
+node tools/check-model-follow.mjs     # validate the matching algorithm against real aria samples
+node tools/check-follow-live.mjs      # resolve and really call each route
 ```
 
 ---
@@ -153,7 +176,6 @@ node tools/preflight.mjs            # static checks (unique ids, security, inter
 node tools/bridge-selftest.mjs      # bridge self-test, including a real model call
 node tools/check-asar-loadable.mjs  # confirm the patched asar still loads
 node tools/sim-overlay.mjs          # full interaction path in a simulated DOM (incl. rAF-stall regression)
-node tools/check-anchor.mjs         # verify ✨ placement against real button rects
 node tools/check-multiline.mjs      # multi-line draft round-trip
 node tools/verify-writedraft.mjs    # live multi-line write consistency (judged by editor state)
 node tools/peek.mjs                 # one-shot live inspection of the overlay + DOM assertions
@@ -169,6 +191,14 @@ node uninstall.mjs    # strips the injection, restores the client (quit ZCode fi
 Only this project's line is removed; the status bar's injection is untouched.
 
 ---
+
+### Known limitations
+
+- Every ZCode update replaces `app.asar` wholesale, wiping the injection (the button silently
+  disappears). Re-run `node repatch_asar.mjs` and restart.
+- Following the session model depends on reading the toolbar button's label. A UI restructure can make
+  that unreadable; the enhancer then falls back to the default model (still functional, just no longer
+  following).
 
 ## Design notes
 

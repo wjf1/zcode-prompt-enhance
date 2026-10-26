@@ -89,26 +89,45 @@ node repatch_asar.mjs
 第 4 步会自动安装 `@electron/asar`（约 20 秒），之后解包 → 备份 → 追加 → 重打包（约 1–3 分钟）。
 ZCode 运行时会持有文件句柄，**必须先完全退出**。
 
-### 指定增强用的模型
+### 增强用哪个模型
 
-编辑 `config.json`：
+**默认实时跟随当前会话选中的模型**——你在输入框右下角切到哪个模型，点 ✨ 就用哪个模型增强。
+
+跟随的判定方式：读取工具行模型按钮的标签文本，用「已知模型 id 是否被标签包含」反查
+`provider_config.json` 里的真实清单。不解析模型名（模型 id 自身可能含 `/`），所以界面文案
+带「最高 / 高 / 中 / 低」等思考档位后缀也不影响。
+
+**跟随失败会自动回落**，不会让功能失效：
+
+| 情况 | 行为 |
+|---|---|
+| 会话模型在 `provider_config.json` 里且有 apiKey | 直接用该模型增强 |
+| 该 provider 额度耗尽 / 鉴权失败 / 网络不通 / 超时 | 自动改用默认模型再试一次，并提示「会话模型不可用，已改用 …」 |
+| 订阅制 / OAuth 登录的 provider（配置里无 apiKey） | 回落到默认模型 |
+| 界面改版导致读不到标签 / 反查有歧义 | 回落到默认模型 |
+
+增强成功后浮层会提示实际用的模型，例如「已按会话模型增强：cn:deepseek-v4.1-flash」。
+
+想固定用某个模型（不跟随），在 `config.json` 里填 `provider` 与 `model` 即可；
+两者留空则跟随。
 
 ```json
 {
-  "provider": "new-provider-2",
-  "model": "cn:deepseek-v4.1-flash",
+  "provider": "",
+  "model": "",
   "max_input_chars": 12000,
   "timeout_ms": 60000
 }
 ```
 
-留空 `provider` 与 `model` 则自动取 `~/.zcode/v2/provider_config.json` 里 `providerOrder` 的第一条可用路由。
-两个字段都有格式白名单，任一非法会整组回落到默认，不会拼出畸形请求。
+> ⚠️ 注意：`config.json` 里填了 `provider`/`model` 只是**默认值**——跟随成功时仍然优先用会话模型。
+> 想让增强固定用某个模型，把会话的模型也切过去；或者接受跟随失败时的回落值。
 
-查看当前会选到哪个模型：
+查看当前会跟随到哪个模型：
 
 ```bash
-node tools/e2e-model.mjs      # 会真的调一次模型并把结果打印出来
+node tools/check-model-follow.mjs     # 用真机 aria 样本验证匹配算法
+node tools/check-follow-live.mjs      # 真实解析 + 真实调用每个路由
 ```
 
 ---
@@ -153,7 +172,6 @@ node tools/preflight.mjs          # 静态体检（id 唯一性、安全断言�
 node tools/bridge-selftest.mjs    # 桥接层自测（含真实模型调用）
 node tools/check-asar-loadable.mjs  # 确认 patched asar 可正常加载
 node tools/sim-overlay.mjs        # 模拟 DOM 跑完整交互链路（含 rAF 停摆回归）
-node tools/check-anchor.mjs       # 用真实按钮矩形验证 ✨ 定位不压原生按钮
 node tools/check-multiline.mjs    # 多行草稿读写往返
 node tools/verify-writedraft.mjs  # 真机多行写入一致性（editor state 判定）
 node tools/peek.mjs               # 真机单次取证：读取当前浮层状态与 DOM 断言
@@ -169,6 +187,12 @@ node uninstall.mjs    # 移除注入行，还原客户端（需先完全退出 Z
 只移除本项目那一行，不影响状态栏项目的注入。
 
 ---
+
+### 已知限制
+
+- ZCode 每次升级会整份替换 `app.asar`，注入随之丢失（按钮静默消失）。需重跑 `node repatch_asar.mjs` 并重启。
+- 跟随会话模型依赖读取工具行按钮的标签文本。界面结构变化会导致读不到，
+  此时回落到默认模型（功能仍可用，只是不再跟随）。
 
 ## 设计要点
 

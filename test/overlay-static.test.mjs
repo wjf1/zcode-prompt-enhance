@@ -164,3 +164,23 @@ test("diff 卡定位最终必须夹紧在视口内", () => {
     "水平方向同样要夹紧"
   );
 });
+
+test("实时跟随：请求里必须带上会话模型标签", () => {
+  assert.ok(/sessionModelLabel: currentModelLabel\(\)/.test(OVERLAY), "请求体要上报会话模型标签");
+  assert.ok(/function currentModelLabel/.test(OVERLAY), "要有读取标签的实现");
+  assert.ok(/function findModelButton/.test(OVERLAY), "模型按钮识别要独立成函数（定位与上报共用）");
+});
+
+test("跟随失败不能报错：标签为空时仍能发请求", () => {
+  // currentModelLabel 必须有 try/catch 且失败返回空串
+  const m = /function currentModelLabel\(\)\s*\{[\s\S]*?\n  \}/.exec(OVERLAY);
+  assert.ok(m, "找不到 currentModelLabel");
+  assert.ok(/catch \(e\)\s*\{\s*return "";/.test(m[0]), "取标签失败必须返回空串而不是抛出");
+});
+
+test("定位与上报共用同一套模型按钮判据（避免各说各话）", () => {
+  assert.ok(
+    /var modelBtn = findModelButton\(card\)/.test(OVERLAY),
+    "anchorFor 应复用 findModelButton"
+  );
+});

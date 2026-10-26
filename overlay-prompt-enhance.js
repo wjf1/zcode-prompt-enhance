@@ -29,7 +29,7 @@
   var PORT = BOOT.port || 0;
   var TOKEN = BOOT.token || "";
   var MAX_CHARS = BOOT.maxInputChars || 12000;
-  var VERSION = BOOT.version || "0.1.0";
+  var VERSION = BOOT.version || "0.2.0";
 
   if (!PORT || !TOKEN) {
     console.error("[zpe] missing boot payload; overlay not mounted");
@@ -268,10 +268,12 @@
     lastDraft: "",
     disabledReason: "",
     model: "",
+    restartNeeded: false, // 主进程代码已变更，需要重启 ZCode
   };
   var abortCtl = null;
   var rafId = 0;
   var alive = true;
+  var usedRoute = null; // 最近一次增强实际使用的路由（含 model / providerName / source）
 
   /* ---------------- DOM 骨架 ---------------- */
   var wrap = el("div");
@@ -814,7 +816,13 @@
       res = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json", "x-zpe-token": TOKEN },
-        body: JSON.stringify({ draft: draft, context: readContext() }),
+        body: JSON.stringify({
+          draft: draft,
+          context: readContext(),
+          // 实时跟随会话模型：把工具行模型按钮的标签交给主进程反查路由。
+          // 取不到时传空串，主进程会回落到 config.json 的默认模型。
+          sessionModelLabel: currentModelLabel(),
+        }),
         signal: abortCtl.signal,
       });
     } catch (e) {
@@ -877,6 +885,12 @@
 
     if (errObj) throw errObj;
     if (!final) throw { code: "empty" };
+    // 记录实际使用的模型与路由来源（跟随成功 / 回落），供 tooltip 与状态查询
+    usedRoute = {
+      model: final.model || "",
+      providerName: final.providerName || "",
+      source: final.routeSource || "",
+    };
     return final.text;
   }
 
@@ -941,6 +955,19 @@
       setPhase("idle");
       renderButtons();
       if (state.diff) openDiff();
+      // 让用户能确认"这次增强用的到底是哪个模型"：跟随成功时就是会话模型
+      if (usedRoute && usedRoute.model) {
+        var msg;
+        if (usedRoute.source === "follow-session") {
+          msg = "已按会话模型增强：" + usedRoute.model;
+        } else if (usedRoute.source === "fallback-after-follow") {
+          // 跟随的模型不可用（额度/网络），自动换了默认模型 —— 必须告知，不能静默
+          msg = "会话模型不可用，已改用 " + usedRoute.model;
+        } else {
+          msg = "已用默认模型增强：" + usedRoute.model;
+        }
+        showToast(msg, usedRoute.source === "fallback-after-follow" ? 4200 : 2400);
+      }
     } catch (e) {
       if (!alive) return;
       var code = (e && e.code) || "internal";
@@ -971,6 +998,60 @@
       composerEl = found;
       cardEl = cardOf(found);
       state.lastDraft = readDraftCanonical(found);
+    }
+  }
+
+  /* ---------------- 会话模型识别（实时跟随） ----------------
+   * 从工具行的模型按钮读出标签文本，交给主进程反查可用路由。
+   *
+   * 为什么读 DOM 而不是 React state：当前选中的模型存在 React 内部 state 里，
+   * 渲染端没有任何公开方式读到它；工具行按钮的 aria-label 是唯一可得的信号。
+   * 因此这是"尽力跟随"：读不到或反查失败时，主进程会回落到 config.json 的默认值，
+   * 不会因此报错。
+   *
+   * 判据与 anchorFor 共用：模型按钮是工具行里含 "/" 且不是已知功能按钮的那一颗
+   * （aria 形如 "<provider>/<model> <思考档位>"）。 */
+  var MODEL_EXCLUDE_RE = /发送|停止|添加上下文|切换模式|上下文|后台任务|send|stop/i;
+
+  /** 在卡片工具行里找模型按钮，返回 { el, label, rect } 或 null。 */
+  function findModelButton(card) {
+    if (!card) return null;
+    var cr = card.getBoundingClientRect();
+    var best = null;
+    var btns = card.querySelectorAll("button, [role='button']");
+    for (var i = 0; i < btns.length; i++) {
+      var b = btns[i];
+      var r;
+      try {
+        r = b.getBoundingClientRect();
+      } catch (e) {
+        continue;
+      }
+      if (r.width < 16 || r.height < 16 || r.height > 44) continue;
+      if (r.top < cr.top + cr.height * 0.45) continue;
+      // 自己的浮层不算
+      if (b.closest && b.closest("#zpe-btn-wrap")) continue;
+      var label =
+        (b.getAttribute("aria-label") || "") + " " + (b.getAttribute("title") || "");
+      if (!/[\\/]/.test(label)) continue;
+      if (MODEL_EXCLUDE_RE.test(label)) continue;
+      if (!best || r.left < best.rect.left) {
+        best = { el: b, label: label.trim(), rect: r, text: (b.textContent || "").trim() };
+      }
+    }
+    return best;
+  }
+
+  /** 取当前会话模型的标签文本（供上报）。取不到返回空串。 */
+  function currentModelLabel() {
+    try {
+      var card = cardEl || (composerEl ? cardOf(composerEl) : null);
+      var m = findModelButton(card);
+      if (!m) return "";
+      // 优先 aria-label（最稳定），退回 title，最后用可见文本
+      return m.label || m.text || "";
+    } catch (e) {
+      return "";
     }
   }
 
@@ -1015,12 +1096,11 @@
     var model = null;
     var leftClusterRight = -Infinity;
     var mid = cr.left + cr.width * 0.5;
+    var modelBtn = findModelButton(card);
     for (var j = 0; j < row.length; j++) {
       var it = row[j];
-      // 模型选择器：aria 形如 "<provider>/<model> <effort>"
-      var isModel =
-        /[\\/]/.test(it.label) && !/发送|停止|添加上下文|切换模式|上下文|send|stop/i.test(it.label);
-      if (isModel && (!model || it.r.left < model.r.left)) model = it;
+      // 模型选择器：与 findModelButton 同一判据，保证定位与上报不会各说各话
+      if (modelBtn && it.el === modelBtn.el && !model) model = it;
       // 左侧簇：中心点落在卡片左半边的按钮
       if (it.r.left < mid && it.r.right > leftClusterRight) leftClusterRight = it.r.right;
     }
@@ -1258,12 +1338,25 @@
       diffVisible: diffCard.style.display !== "none",
       lastAnchor: state.lastAnchor || null,
       placeError: state.placeError || "",
+      // 实时跟随相关：会话模型标签（读 DOM 得到）与上一次实际使用的路由
+      sessionModelLabel: currentModelLabel(),
+      usedRoute: usedRoute || null,
+      restartNeeded: !!state.restartNeeded,
       wrapRect: (function () {
         var r = wrap.getBoundingClientRect();
         return [r2(r.left), r2(r.top), r2(r.width), r2(r.height)];
       })(),
       version: VERSION,
     };
+  };
+
+  /* 主进程代码变更提示：inject-main.cjs / core/*.mjs 不能热更新，
+     改了必须重启 ZCode 才生效。没有这个提示，改主进程代码的人会以为改动已生效。 */
+  window.__zpeNotifyRestartNeeded = function () {
+    if (!alive) return;
+    state.restartNeeded = true;
+    showToast("增强插件的服务端代码已更新，重启 ZCode 后生效", 8000);
+    renderButtons();
   };
 
   /* 供真实点击走查/自动化断言用的定位信息 */

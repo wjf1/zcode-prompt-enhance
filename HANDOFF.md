@@ -11,11 +11,11 @@
 | 项 | 值 |
 |---|---|
 | 项目定位 | ZCode Desktop 输入框旁 ✨ 一键增强提示词，原地回填 + 撤销 + diff |
-| 版本 | `0.1.0` |
-| 位置 | `F:\AI\Zcode\zcode-prompt-enhance`（未 `git init`） |
-| 线上部署 | 无（本地客户端增强工具） |
-| 目标宿主 | ZCode Desktop **3.16.3**，装于 `F:\software\Zcode`，`app.asar` = `F:\software\Zcode\resources\app.asar` |
-| 当前状态 | **已上线可用**：注入完成、真机点击验收通过、三轮真机缺陷已修复 |
+| 版本 | `0.2.0` |
+| 位置 | `F:\AI\Zcode\zcode-prompt-enhance` |
+| 仓库 | https://github.com/wjf1/zcode-prompt-enhance |
+| 目标宿主 | ZCode Desktop **3.16.3**，装于 `F:\software\Zcode` |
+| 当前状态 | **已上线可用**：0.2.0 实时跟随会话模型，已发布 v0.1.0 |
 
 ### 当前注入状态
 
@@ -133,11 +133,49 @@ F:\AI\Zcode\zcode-prompt-enhance\
 
 ## 4. 最近一轮变更与交付成果
 
-### 本轮（2026-10-26）完成的事
+### 4.0 v0.2.0（当前）：实时跟随会话模型
 
-**从零实现 v0.1.0 → 注入 → 重启 → 真机验收通过，期间修复 3 个只在真机上暴露的缺陷。**
+用户提出的需求是「增强是否跟随当前对话的模型」。0.1.0 的答案是"不跟随"（固定用
+`config.json` 的模型）。0.2.0 改为**默认跟随**。
 
-#### 4.1 真机验收结果（2026-10-26 17:30 后）
+**实现方式**：点 ✨ 时读工具行模型按钮的 `aria-label`，随请求上报给主进程；
+主进程用「已知模型 id 是否被标签包含」的最长匹配反查路由。
+
+**三个关键设计决定**：
+
+1. **不解析模型名**。模型 id 自身可能含 `/`（`meta/muse-spark-1.3`、
+   `deepseek/deepseek-v4.1-flash`），按分隔符切分必然出错。改为拿
+   `provider_config.json` 的真实模型清单去 `label.includes(model)`，取最长匹配
+   （防 `gpt-6` 抢先命中 `gpt-6-astra`），并做边界检查（前后不能紧邻
+   `[A-Za-z0-9_.-]`），等长且指向不同路由判为歧义 → 安静回落。
+
+2. **跟随失败必须自动回落**。真机实测发现：会话切到 `cmcode` 那个 provider 时额度已耗尽
+   （HTTP 400 `insufficient credits`），若直接报错，用户会觉得"点了没反应"。
+   现在对 `internal/quota/auth/invalid-credential/rate-limit/unsupported/timeout`
+   这几类错误，自动用默认路由重试一次（**仅一次**，避免重复烧额度），
+   并在浮层提示「会话模型不可用，已改用 …」。用户主动取消不触发回落。
+
+3. **回落要可见**。增强成功后浮层提示实际使用的模型与来源
+   （`已按会话模型增强：…` / `已用默认模型增强：…` / `会话模型不可用，已改用 …`）。
+   `__zpeState()` 暴露 `sessionModelLabel` 与 `usedRoute`。
+
+**优先级链**（`resolveRoute`）：跟随会话 → 显式 provider → 显式 model → 默认第一条。
+传空标签时行为与 0.1.0 逐字节一致（有测试守住）。
+
+**路由缓存**键加入会话标签 + `config.json` mtime，否则切模型后仍用旧路由。
+
+**验证数据**（2026-10-26 实测）：
+
+| 项 | 结果 |
+|---|---|
+| 跟随算法单测 | 13 项全过（真机 aria 样本、含 `/` 的 id、前缀碰撞、中文尾缀、等长歧义、无凭据 provider 不被选中） |
+| 总测试 | **118 项全过** |
+| 真实路由解析 | 6/6 标签全部 `follow-session` 命中正确 provider+model |
+| 跟随可用模型 | workbuddy / cn:deepseek-v4.1-flash → 真实调用成功，返回 465 字 |
+| 跟随不可用模型 | cmcode（额度耗尽）→ 如期报 `quota` → 回落 workbuddy → 成功返回 482 字 |
+| 桥接自测 | 全过，无回归 |
+
+### 4.1 v0.1.0 真机验收结果
 
 用户点击 ✨ 后截图确认功能正常：
 
@@ -151,7 +189,7 @@ F:\AI\Zcode\zcode-prompt-enhance\
 客观 DOM 断言（`tools/peek.mjs`，单次只读取证）：
 按钮 `[538,673,28,28]`、不压任何原生按钮、不与状态栏重叠、中心点命中自己、无重复 id、祖先链正确。
 
-#### 4.2 真机暴露并修复的三个缺陷
+#### 4.2 v0.1.0 真机暴露并修复的三个缺陷
 
 | # | 缺陷 | 根因 | 修复 |
 |---|---|---|---|
@@ -230,7 +268,7 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 |---|---|---|
 | 单元测试 | `npm test` | **102 项全过** |
 | 注入前静态体检 | `tools/preflight.mjs` | 全过（id 唯一、id 前缀、无 apiKey、安全断言） |
-| ✨ 定位算法（真实矩形） | `tools/check-anchor.mjs` / `test/anchor.test.mjs` | 全过 |
+| ✨ 定位算法（真实矩形） | `test/anchor.test.mjs` | 全过 |
 | 多行草稿往返 | `tools/check-multiline.mjs` | 全过 |
 | 浮层完整交互链路 | `tools/sim-overlay.mjs` | 全过，含 rAF 停摆回归 |
 | 桥接层（真实模型） | `tools/bridge-selftest.mjs` | 全过 |
@@ -253,9 +291,14 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 
 ### 5.3 已知限制（非缺陷，是设计取舍）
 
-1. **增强模型不跟随输入框选中的模型** —— 那是 React 内部 state，渲染端读不到。用 `config.json` 指定。
+1. **跟随会话模型依赖读 DOM** —— 当前选中的模型存在 React 内部 state 里，渲染端读不到，
+   只能从工具行按钮的 `aria-label` 反推。界面结构变化会导致读不到，此时回落到默认模型
+   （功能仍可用，只是不再跟随）。这是「尽力跟随 + 安全回落」，不是精确同步。
 2. **每次 ZCode 升级注入丢失** —— 客户端整份替换 asar。这是 asar 方案的固有代价。
 3. **多窗口**：每个窗口都注入，各自独立，共用同一个桥与同一套闸门（限流是全局的）。
+   不同窗口的会话模型可能不同，各自随请求上报，互不影响。
+4. **跟随成功时 `config.json` 的 provider/model 不生效** —— 它只是回落目标。
+   想让增强固定用某个模型，需要把会话模型也切过去。
 
 ---
 

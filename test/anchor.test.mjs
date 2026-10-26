@@ -15,8 +15,8 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = fs.readFileSync(path.join(HERE, "..", "overlay-prompt-enhance.js"), "utf8");
 
-function extractFn(name) {
-  const m = new RegExp(`function ${name}\\(card\\)\\s*\\{`, "m").exec(SRC);
+function extractFn(name, args = "card") {
+  const m = new RegExp(`function ${name}\\(${args}\\)\\s*\\{`, "m").exec(SRC);
   assert.ok(m, `找不到 ${name}`);
   const start = SRC.indexOf("{", m.index);
   let depth = 0;
@@ -30,7 +30,18 @@ function extractFn(name) {
   throw new Error(`${name} 括号不闭合`);
 }
 
-const anchorFor = new Function("card", extractFn("anchorFor") + "; return anchorFor(card);");
+/* anchorFor 现在复用了 findModelButton（定位与模型上报共用同一判据），
+   单独提取 anchorFor 会得到 "findModelButton is not defined"。
+   这里把它依赖的常量和函数一起带上，保持被测代码与真实实现一致。 */
+const anchorFor = new Function(
+  "card",
+  [
+    'var MODEL_EXCLUDE_RE = /发送|停止|添加上下文|切换模式|上下文|后台任务|send|stop/i;',
+    extractFn("findModelButton", "card"),
+    extractFn("anchorFor", "card"),
+    "return anchorFor(card);",
+  ].join("\n")
+);
 
 function makeCard(cardRect, buttons) {
   return {

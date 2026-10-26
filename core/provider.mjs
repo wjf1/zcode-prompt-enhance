@@ -83,12 +83,14 @@ export function listRoutes(cfg) {
 /**
  * 解析最终要用的路由。
  * 优先级：
- *   1) 显式指定的 provider + model（两者都必须合法且存在于配置中）
- *   2) 第一条可用 provider 的首个 model
- *   3) 失败 → null
+ *   1) 调用方实时上报的会话模型（`sessionModelLabel`，来自工具行模型按钮的 aria-label）
+ *      —— 命中即跟随会话；未命中/歧义则继续往下回落，绝不因此失败
+ *   2) 显式指定的 provider + model（两者都必须合法且存在于配置中）
+ *   3) 第一条可用 provider 的首个 model
+ *   4) 失败 → null
  *
  * @param {object} cfg provider_config.json 内容
- * @param {{provider?: string, model?: string}} [pref] 用户配置覆盖
+ * @param {{provider?: string, model?: string, sessionModelLabel?: string}} [pref]
  * @returns {{providerId:string, providerName:string, apiKey:string, baseUrl:string, model:string, source:string}|null}
  */
 export function resolveRoute(cfg, pref = {}) {
@@ -98,8 +100,14 @@ export function resolveRoute(cfg, pref = {}) {
   const wantProvider = pref && pref.provider;
   const wantModel = pref && pref.model;
 
-  // 显式 provider 命中（model 可以是该 provider 下任意合法 id，不要求在白名单里：
-  // 用户可能用配置里没列出的模型名，但仍需通过格式白名单）
+  // 1) 实时跟随会话模型
+  const followed = matchByLabel(routes, pref && pref.sessionModelLabel);
+  if (followed) {
+    return { ...followed.route, model: followed.model, source: "follow-session" };
+  }
+
+  // 2) 显式 provider 命中（model 可以是该 provider 下任意合法 id，不要求在白名单里：
+  //    用户可能用配置里没列出的模型名，但仍需通过格式白名单）
   if (wantProvider && isValidModelId(wantProvider)) {
     const hit = routes.find((r) => r.providerId === wantProvider);
     if (hit) {
@@ -109,15 +117,69 @@ export function resolveRoute(cfg, pref = {}) {
     }
   }
 
-  // 只给了 model：在所有 provider 里找第一个声明了该 model 的
+  // 3) 只给了 model：在所有 provider 里找第一个声明了该 model 的
   if (wantModel && isValidModelId(wantModel)) {
     const hit = routes.find((r) => r.models.includes(wantModel));
     if (hit) return { ...hit, model: wantModel, source: "explicit-model" };
   }
 
-  // 默认：第一条可用 provider 的首个 model
+  // 4) 默认：第一条可用 provider 的首个 model
   const first = routes[0];
   const model =
     wantModel && isValidModelId(wantModel) ? wantModel : first.models[0];
   return { ...first, model, source: "default" };
+}
+
+/**
+ * 从工具行的模型按钮文本（aria-label / title / textContent）反查可用路由。
+ *
+ * 为什么不解析模型名：模型 id 自身可能含 "/"（`meta/muse-spark-1.3`、
+ * `deepseek/deepseek-v4.1-flash`），按分隔符切分必然出错。改用「已知模型 id
+ * 是否被标签文本包含」，匹配源就是 provider_config.json 里的真实清单，
+ * 对界面文案变化（例如尾部追加「最高」「高」等思考档位）不敏感。
+ *
+ * 取最长匹配：避免 `gpt-6` 抢先命中 `gpt-6-astra` 这类前缀包含。
+ * 等长且模型不同 → 判为歧义，返回 null 让上层回落，不做猜测。
+ *
+ * @param {ReturnType<typeof listRoutes>} routes
+ * @param {string} label
+ * @returns {{route:object, model:string}|null}
+ */
+export function matchByLabel(routes, label) {
+  if (typeof label !== "string" || label.trim() === "") return null;
+
+  const hits = [];
+  for (const r of routes) {
+    for (const m of r.models) {
+      if (!label.includes(m)) continue;
+      // 边界检查：模型 id 前后不应紧邻字母/数字/下划线/连字符/点，
+      // 否则是把更长标识符的一部分当成了独立模型名（如 abc-def 命中 def）
+      let idx = label.indexOf(m);
+      while (idx >= 0) {
+        const before = idx > 0 ? label[idx - 1] : "";
+        const after = label[idx + m.length] || "";
+        const boundaryBefore = before === "" || !/[A-Za-z0-9_.-]/.test(before);
+        const boundaryAfter = after === "" || !/[A-Za-z0-9_.-]/.test(after);
+        if (boundaryBefore && boundaryAfter) {
+          hits.push({ route: r, model: m, len: m.length });
+          break;
+        }
+        idx = label.indexOf(m, idx + 1);
+      }
+    }
+  }
+  if (hits.length === 0) return null;
+
+  hits.sort((a, b) => b.len - a.len);
+  const best = hits[0];
+  // 歧义判据：等长但指向不同的 (provider, model) 组合 → 无法确定用户用的是哪个，
+  // 宁可回落也不猜。注意不能只比 model 字符串：不同 provider 可能声明同名模型，
+  // 那种情况下凭据/baseUrl 不同，随便选一个就是错的。
+  const tied = hits.filter(
+    (h) =>
+      h.len === best.len &&
+      (h.model !== best.model || h.route.providerId !== best.route.providerId)
+  );
+  if (tied.length) return null;
+  return { route: best.route, model: best.model };
 }
