@@ -39,6 +39,8 @@ const DEFAULTS = {
   context_enabled: false,
   context_max_messages: 8,
   context_max_chars: 4000,
+  // 空数组 = 只信任本地打包协议（file:/app:/chrome-extension:/devtools:）
+  allowed_window_hosts: [],
 };
 
 let cfg = { ...DEFAULTS };
@@ -59,6 +61,8 @@ function readCfg() {
 
 /* ---------------- core 模块（ESM）延迟加载 ---------------- */
 let corePromise = null;
+/* 已解析的 core 模块引用：错误码的 retryable 必须查 core 的表，不能再硬编码。 */
+let coreMod = null;
 function loadCore() {
   if (!corePromise) {
     corePromise = (async () => {
@@ -67,13 +71,28 @@ function loadCore() {
         import(pathToFileUrl(path.join(HERE, "core", "enhancer.mjs"))),
         import(pathToFileUrl(path.join(HERE, "core", "gates.mjs"))),
       ]);
-      return { provider, enhancer, gates };
+      coreMod = { provider, enhancer, gates };
+      return coreMod;
     })().catch((e) => {
       corePromise = null;
       throw e;
     });
   }
   return corePromise;
+}
+
+/**
+ * 错误是否值得让用户「重试」。
+ *
+ * 数据源必须是 core/enhancer.mjs 的 ERROR_CODES 表：早先这里只对 auth / quota
+ * 两个码做了硬编码排除，把 invalid-credential（表里 retryable=false）判成可重试
+ * → 浮层给不可恢复的凭据错误显示"重试"，用户点了必然再失败、并再烧一次请求额度。
+ * core 未就绪时保守返回 false（不鼓励重试）。 */
+function retryableOf(code) {
+  try {
+    if (coreMod) return !!coreMod.enhancer.describeError(code).retryable;
+  } catch {}
+  return false;
 }
 
 function pathToFileUrl(p) {
@@ -85,31 +104,48 @@ function pathToFileUrl(p) {
 /* ---------------- provider 路由（带 mtime 缓存） ---------------- */
 /* 路由缓存：按 provider_config.json 的 mtime + config.json 的 mtime + 会话模型标签 三段键。
  * 会话模型会随用户切换而变，缓存键必须带上它，否则切了模型还在用旧路由。 */
-let routeCache = { key: "", route: null, source: "" };
+let routeCache = { key: "", route: null, source: "", detail: "" };
+
+/** 无路由时的可读原因：把"文件不存在 / 格式不认 / 没有可用 provider"三态分开。 */
+function noRouteDetail(shape, hasConfig) {
+  if (!hasConfig || shape === "missing") return "未找到 provider 配置（请先在 ZCode 里配置一个模型）";
+  if (shape === "unknown") return "provider 配置格式无法识别（可能是 ZCode 版本升级导致）";
+  return "没有可用的 anthropic-messages provider";
+}
+
 async function currentRoute(sessionModelLabel) {
   const { provider } = await loadCore();
-  const cfgPath = provider.defaultConfigPath();
+  // 路径与形状一起探测：v2 之外还有 v3 / cli / v1 候选（历史上已经迁移过一次）
+  const found = provider.findConfig();
+  const cfgPath = found.path || provider.defaultConfigPath();
   let mtime = 0;
   try {
     mtime = fs.statSync(cfgPath).mtimeMs;
   } catch {
-    return { route: null, reason: "provider_config.json 不可读" };
+    mtime = 0;
   }
   const c = readCfg();
   const label = typeof sessionModelLabel === "string" ? sessionModelLabel : "";
-  const key = mtime + "|" + cfgMtime + "|" + c.provider + "|" + c.model + "|" + label;
+  const key = mtime + "|" + found.shape + "|" + cfgPath + "|" + cfgMtime + "|" + c.provider + "|" + c.model + "|" + label;
   if (routeCache.key === key) {
-    return { route: routeCache.route, source: routeCache.source, reason: routeCache.route ? "" : "no-route" };
+    return {
+      route: routeCache.route,
+      source: routeCache.source,
+      reason: routeCache.detail,
+      shape: found.shape,
+      configPath: cfgPath,
+    };
   }
 
-  const pcfg = provider.loadProviderConfig(cfgPath);
+  const pcfg = found.parsed;
   const route = provider.resolveRoute(pcfg, {
     provider: c.provider,
     model: c.model,
     sessionModelLabel: label,
   });
-  routeCache = { key, route, source: route ? route.source : "" };
-  return { route, source: route ? route.source : "", reason: route ? "" : "没有可用的 anthropic-messages provider" };
+  const detail = route ? "" : noRouteDetail(found.shape, !!found.parsed);
+  routeCache = { key, route, source: route ? route.source : "", detail };
+  return { route, source: route ? route.source : "", reason: detail, shape: found.shape, configPath: cfgPath };
 }
 
 /* ---------------- 闸门 ---------------- */
@@ -156,19 +192,30 @@ function readBody(req, limitBytes) {
 
 function startBridge() {
   const server = http.createServer(async (req, res) => {
+    /* Host 校验必须在 token 校验之前：
+     * 防 DNS rebinding —— 攻击者域名可以解析到 127.0.0.1，此时来源 IP 也是本机，
+     * 但 Host 头会是攻击者的域名。只认回环主机名才能真正锁死"本机页面"。 */
+    const host = String(req.headers.host || "");
+    if (bridgePort && host !== "127.0.0.1:" + bridgePort && host !== "localhost:" + bridgePort) {
+      return json(res, 403, { code: "forbidden" });
+    }
+
     // 只接受本机回环 + 正确 token
     const token = req.headers["x-zpe-token"];
     if (token !== BRIDGE_TOKEN) return json(res, 403, { code: "forbidden" });
 
     const url = new URL(req.url, "http://127.0.0.1");
     if (url.pathname === "/health") {
-      const { route } = await currentRoute().catch(() => ({ route: null }));
+      const hr = await currentRoute().catch(() => ({ route: null, shape: "missing", configPath: null }));
       return json(res, 200, {
         ok: true,
-        version: "0.2.0",
-        model: route ? route.model : null,
-        provider: route ? route.providerName : null,
+        version: "0.3.1",
+        model: hr.route ? hr.route.model : null,
+        provider: hr.route ? hr.route.providerName : null,
         maxInputChars: readCfg().max_input_chars,
+        // 三态诊断：文件在哪、形状是什么，出问题时不用再靠猜
+        configPath: hr.configPath || null,
+        configShape: hr.shape || "missing",
       });
     }
 
@@ -257,12 +304,18 @@ function startBridge() {
         /* 跟随会话模型失败时的自动回落：
          * 真机实测——会话切换到的 provider 可能额度耗尽 / 网络不可达，
          * 此时整次增强会直接失败，用户会觉得"点了没反应"。
-         * 只要不是用户主动取消，就用默认路由再试一次（仅一次，避免重复烧额度）。 */
+         * 只要不是用户主动取消，就用默认路由再试一次（仅一次，避免重复烧额度）。
+         *
+         * timeout 例外：超时时上游可能已经产出并计费了大量 token，
+         * 此时整包重发等于一次点击烧双份额度。只有"一个 token 都没吐"
+         * （hadFirstChunk === false）的超时才值得回落。 */
         const code = (err && err.code) || "internal";
         const fallbackable =
           source === "follow-session" &&
           !callerAbort.signal.aborted &&
-          ["internal", "quota", "auth", "invalid-credential", "rate-limit", "unsupported", "timeout"].includes(code);
+          (code === "timeout"
+            ? !!err && err.hadFirstChunk === false
+            : ["internal", "quota", "auth", "invalid-credential", "rate-limit", "unsupported"].includes(code));
         if (!fallbackable) throw err;
 
         const fb = await currentRoute(""); // 空标签 = 不跟随，走 config 默认
@@ -293,10 +346,10 @@ function startBridge() {
       }
       LOG("enhance failed:", code, (err && err.detail) || (err && err.message) || "");
       if (!res.headersSent) {
-        return json(res, 200, { type: "error", code, retryable: code !== "auth" && code !== "quota" });
+        return json(res, 200, { type: "error", code, retryable: retryableOf(code) });
       }
       if (!res.writableEnded) {
-        res.write(JSON.stringify({ type: "error", code, retryable: code !== "auth" && code !== "quota" }) + "\n");
+        res.write(JSON.stringify({ type: "error", code, retryable: retryableOf(code) }) + "\n");
         res.end();
       }
     } finally {
@@ -330,10 +383,21 @@ function bootSource() {
     port: bridgePort,
     token: BRIDGE_TOKEN,
     maxInputChars: c.max_input_chars,
-    version: "0.2.0",
+    version: "0.3.1",
   };
   return "window.__ZPE_BOOT__=" + JSON.stringify(boot) + ";\n" + overlaySrc;
 }
+
+/* ---------------- 窗口可信判定 ---------------- */
+/* 加载是异步的；在它完成之前只允许本地协议（安全默认，不是"全部放行"）。 */
+let trust = null;
+import(pathToFileUrl(path.join(HERE, "core", "trust.mjs")))
+  .then((m) => {
+    trust = m.createTrustChecker(readCfg().allowed_window_hosts || []);
+  })
+  .catch((e) => LOG("trust module load failed:", e.message));
+
+let trustSkipLogged = false;
 
 function isMainWindow(wc) {
   try {
@@ -343,8 +407,36 @@ function isMainWindow(wc) {
   }
 }
 
+/**
+ * 是否允许向该窗口注入（含桥 token）。
+ *
+ * isMainWindow 只保证"是个窗口"，不保证"窗口里是我们的代码"。
+ * 这里再校验窗口当前加载的 URL：远程页面默认一律拒绝，
+ * 只有显式写进 config.json 的 allowed_window_hosts 才放行。
+ */
+function isTrustedWindow(wc) {
+  try {
+    if (!isMainWindow(wc)) return false;
+    var url = wc.getURL();
+    if (!trust) return /^(file|app|chrome-extension|devtools):/i.test(String(url || ""));
+    return trust.check(url);
+  } catch (e) {
+    return false;
+  }
+}
+
 function inject(wc) {
-  if (!overlaySrc || !isMainWindow(wc) || wc.isDestroyed()) return;
+  if (!overlaySrc || wc.isDestroyed()) return;
+  if (!isTrustedWindow(wc)) {
+    // 只打第一次，避免每秒刷屏
+    if (!trustSkipLogged) {
+      trustSkipLogged = true;
+      try {
+        LOG("skip untrusted window:", wc.getURL());
+      } catch {}
+    }
+    return;
+  }
   if (!bridgePort) {
     // 端口还没分配好，稍后重试一次
     setTimeout(() => inject(wc), 300);
@@ -374,7 +466,7 @@ function hotReload() {
   overlaySrc = src;
   LOG("overlay changed, hot-reloading");
   for (const wc of webContents.getAllWebContents()) {
-    if (!isMainWindow(wc) || wc.isDestroyed()) continue;
+    if (!isTrustedWindow(wc) || wc.isDestroyed()) continue;
     wc.executeJavaScript(
       "(function(){try{window.__zpeTeardown&&window.__zpeTeardown();}catch(e){}})()",
       true
@@ -388,6 +480,11 @@ function hotReload() {
 readCfg();
 startBridge();
 
+/* ⚠️ web-contents-created 触发时窗口还没有 URL（getURL() 返回空串），这里只能按
+ * 窗口类型过滤；可信判定（URL 校验）在 inject() 内做 —— 那时 did-finish-load
+ * 已触发、URL 已就绪。v0.3.0 曾在这里直接用 isTrustedWindow，空 URL 被判不可信
+ * → 主窗口的 did-finish-load 永远没挂上 → 桥活着但按钮从未注入（真机复现，
+ * tools/inject-gate-selftest.mjs 的两条回归锚点即由此而来）。 */
 app.on("web-contents-created", (_e, wc) => {
   if (!isMainWindow(wc)) return;
   wc.on("did-finish-load", () => inject(wc));
@@ -433,7 +530,7 @@ setInterval(() => {
     mainMtimeSnapshot = now;
     LOG("主进程代码已变更（inject-main.cjs 或 core/*.mjs）—— 需要重启 ZCode 才能生效");
     for (const wc of webContents.getAllWebContents()) {
-      if (!isMainWindow(wc) || wc.isDestroyed()) continue;
+      if (!isTrustedWindow(wc) || wc.isDestroyed()) continue;
       wc.executeJavaScript(
         '(function(){try{window.__zpeNotifyRestartNeeded&&window.__zpeNotifyRestartNeeded();}catch(e){}})()',
         true
@@ -442,4 +539,4 @@ setInterval(() => {
   }
 }, 3000);
 
-LOG("injected v0.2.0 (local bridge + Lexical setEditorState writer + gates + session-model follow)");
+LOG("injected v0.3.1 (bridge host-check + trusted-window gate + anchor overlap guard + config shape probe + timeout fallback tightening)");

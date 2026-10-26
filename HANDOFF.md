@@ -1,7 +1,7 @@
 # HANDOFF.md — 接力开发文档
 
 > 项目：zcode-prompt-enhance（ZCode 提示词增强）
-> 当前阶段：**v0.1.0 已注入客户端，待重启验证**
+> 当前阶段：**v0.3.0 加固与适配完成，待真机重启验证**
 > 最后更新：2026-10-26
 
 ---
@@ -11,25 +11,52 @@
 | 项 | 值 |
 |---|---|
 | 项目定位 | ZCode Desktop 输入框旁 ✨ 一键增强提示词，原地回填 + 撤销 + diff |
-| 版本 | `0.2.0` |
-| 位置 | `F:\AI\Zcode\zcode-prompt-enhance` |
+| 版本 | `0.3.1` |
+| 位置 | 开发副本 `F:\AI\workbuddy\workspace\2026-10-26-20-56-44\repo-analysis`；部署路径 `F:\AI\Zcode\zcode-prompt-enhance`（注入行指向后者，需先同步） |
 | 仓库 | https://github.com/wjf1/zcode-prompt-enhance |
-| 目标宿主 | ZCode Desktop **3.16.3**，装于 `F:\software\Zcode` |
-| 当前状态 | **已上线可用**：0.2.0 实时跟随会话模型，已发布 v0.1.0 |
+| 目标宿主 | ZCode Desktop **3.16.3**，实际装于 `E:\ZCode`（`F:\software\Zcode` 已不存在） |
+| 当前状态 | **v0.3.1 已同步部署路径，asar 已注入（23:16）；0.3.0 首次重启暴露注入回归并已修复，待再次重启验证** |
+
+### 0.3.0 相对 0.2.0 的一句话差异
+
+0.3.1 修掉 0.3.0 的注入回归（窗口创建时空 URL 被拒，按钮从未出现）。
+0.3.0 修掉「安全退路反而压住发送按钮」的定位炸弹（`anchorFor` 重叠自检 + 步进避让），
+收窄桥令牌注入面（可信窗口判定 + Host 校验），并把三类静默失败
+（定位劣化、配置格式变更、编辑器不兼容）变成可观测状态。测试 118 → 140。
 
 ### 当前注入状态
 
+**✅ 2026-10-26 23:16 已重新注入，等待重启生效。**
+
 ```
-app.asar 307,046,010 字节（注入前 307,045,797，+213 字节 = 注入行长度）
-注入标记：__ZPE_PATCH__ ✅   __ZUSAGE_PATCH__（状态栏）✅ 保留
-备份：F:\software\Zcode\resources\app.asar.bak-zpe-20261026091847（注入前干净副本）
-入口末尾两行 loader：
-  ;import("file:///C:/Users/Administrator/.zcode/zcode-token-usage-statusbar/inject-main.cjs")
-  ;import("file:///F:/AI/Zcode/zcode-prompt-enhance/inject-main.cjs")
+实际运行位置：E:\ZCode\resources\app.asar
+  注入前 307,045,789 字节 → 注入后 307,046,002 字节（+213 = 注入行长度）
+  __ZPE_PATCH__    ✅ true（本项目，本次注入）
+  __ZUSAGE_PATCH__ ✅ true（状态栏项目，原样保留）
+备份：E:\ZCode\resources\app.asar.bak-zpe-20261026151638（注入前干净副本；脚本保留最近 3 份轮转）
+注入行：;import("file:///F:/AI/Zcode/zcode-prompt-enhance/inject-main.cjs")
+部署路径：F:\AI\Zcode\zcode-prompt-enhance
+  —— v0.3.0 全量代码 + .git，与开发副本逐文件一致；
+     npm test 140/140、tools/preflight ALL PASS 已在部署路径复跑确认
+开发副本：F:\AI\workbuddy\workspace\2026-10-26-20-56-44\repo-analysis
+  —— 注入行不再指向它；后续开发与推送建议直接在部署路径做
+
+历史：ZCode 曾重装/迁移到 E:\ZCode，asar 被整份替换导致本项目注入丢失
+（F:\software\Zcode 已不存在；状态栏项目迁移后重新注入过，本项目当时没有）。
+2026-10-26 已重新同步代码并注入。
 ```
 
-⚠️ **注入的 loader 只在主进程启动时加载。当前 ZCode 进程是在注入之前启动的，所以 ✨ 按钮还没生效。**
-需要完全退出 ZCode（托盘 → Quit）再重新打开。
+0.3.1 追记：首次重启（23:21）后桥活着但按钮未出现 → 定位到 0.3.0 注入门回归
+（web-contents-created 时空 URL 被拒，见 CHANGELOG 0.3.1）。已在部署路径就地修复 loader
+与 overlay（**asar 无需重打**）：overlay 改 mtime 会被运行中的会话热注入，loader 修复需再次重启生效。
+验证链：`tools/inject-gate-selftest.mjs` 在旧代码上 4 FAIL（负对照），修复后 ALL PASS。
+
+⚠️ **注入的 loader 只在主进程启动时加载。当前 ZCode 进程仍在跑注入前的代码——
+需要完全退出 ZCode（托盘 → Quit）再重新打开。**
+
+⚠️ **0.3.0 改了 `inject-main.cjs` 与 `core/*.mjs`，这些只在主进程启动时加载。**
+重启后生效；overlay 文件本身走 mtime 热更新，但它的新逻辑依赖主进程侧的新字段，
+不要指望热更新单独生效。
 
 ---
 
@@ -37,11 +64,11 @@ app.asar 307,046,010 字节（注入前 307,045,797，+213 字节 = 注入行长
 
 | 项 | 约束 |
 |---|---|
-| 运行时 | Node.js **≥ 22**（实测 v24.19.0） |
+| 运行时 | Node.js **≥ 22**（实测 v22.23.2） |
 | 语言 | 注入层 `.cjs`（主进程 CommonJS）；核心逻辑 `.mjs`；浮层是纯 IIFE 字符串注入 |
-| 运行时依赖 | **零**（prompt / diff / gates / SSE 全手写） |
+| 运行时依赖 | **零**（prompt / diff / gates / SSE / trust 全手写） |
 | 开发期依赖 | `@electron/asar`，自动装到 `.asar-tools/`（首次 `repatch` 时） |
-| 测试 | `node --test "test/*.test.mjs"`（Node 内置，89 项） |
+| 测试 | `node --test "test/*.test.mjs"`（Node 内置，**140 项**） |
 | 模型协议 | Anthropic Messages，`POST {baseUrl}/messages`，SSE 流式 |
 
 ### 核心命令
@@ -51,23 +78,32 @@ node repatch_asar.mjs --dry-run        # 只解析路径 + 报告是否已注入
 node repatch_asar.mjs --check          # 退出码 1 = 注入已丢失
 node repatch_asar.mjs                  # 注入（需先完全退出 ZCode）
 node uninstall.mjs                     # 移除注入，还原（需先完全退出 ZCode）
-npm test                               # 89 项单测
+npm test                               # 140 项单测
 node tools/preflight.mjs               # 静态体检
-node tools/bridge-selftest.mjs         # 桥接自测（含真实模型调用）
+node tools/check-core-url.mjs          # core（含 trust）能否用 file:// 导入
+node tools/bridge-selftest.mjs         # 桥接自测（含 Host 校验 + 真实模型调用）
+node tools/inject-gate-selftest.mjs    # 注入门禁时序自测（stub electron，0.3.1 新增）
 node tools/check-asar-loadable.mjs     # 确认 patched asar 可加载
+node tools/sim-overlay.mjs             # 模拟 DOM 全链路（rAF 停摆 / 定位缓存 / 无障碍）
 node tools/verify-writedraft.mjs       # 校验多行写入的 editor state 一致性
 node tools/e2e-model.mjs               # 真实模型端到端
 ```
 
 ### 本机实测基线
 
-- 可用 provider：`new-provider-2` / `workbuddy代理` → `http://127.0.0.1:7863/v1`，
-  模型 `cn:deepseek-v4.1-flash`（实测 HTTP 200，首字约 1.7s，完整增强约 3.6–6.5s）
-- ⚠️ `DESIGN.md` 里写的 `new-provider-4` **已不存在**，实际 id 是 `new-provider-2`
-- 输入框实测：`[contenteditable="true"]`，类名 `min-h-10 max-h-40 ... outline-none`，
-  矩形 `[345,621,836,40]`；卡片 `[333,608,861,105]`
+- 可用 provider（2026-10-26 晚实测，E:\ZCode 时代的 provider_config）：
+  - `new-provider-4` / `workbuddy 代理` → `http://127.0.0.1:7863/v1`，`cn:deepseek-v4.1-flash` —— **有额度**，
+    已写入部署路径 `config.json` 作为默认路由（改 config 后不需重启，下一次点 ✨ 即生效）
+  - `64a1207f-...` / `commandcode` → `http://127.0.0.1:9090/v1` —— 上游额度耗尽（HTTP 400 insufficient credits）
+  - `new-provider` / `新供应商` → `localhost:20128`，`new-provider-3` / `Gemini` → `127.0.0.1:8045` —— 本机服务未启动
+- ⚠️ provider id 会随 provider_config 重写而漂移（v0.2.0 时代 workbuddy 叫 `new-provider-2`，
+  现在叫 `new-provider-4`）—— 引用 id 前先跑 `listRoutes` 现查，不要相信文档快照
+- 会话模型标签（如 `GLM-5.3-Flash 最高`）在 provider_config 里无命中项 → 增强固定走默认路由
+- 输入框实测：`[contenteditable="true"]`，矩形 `[345,621,836,40]`；卡片 `[333,608,861,105]`
 - 工具行按钮（y=673、高 28）：添加上下文 x=345 / 切换模式 x=377 / 后台任务 x=493 /
   上下文用量 x=900 / 模型选择器 x=932(w218) / 发送或停止 x=1153
+- 主窗口加载方式实测（`E:\ZCode\resources\app.asar` 内 `loadWindow`）：
+  `e.loadFile(.../renderer/index.html)` → **`file:` 协议**，因此 `allowed_window_hosts` 留空即可。
 
 ---
 
@@ -79,14 +115,15 @@ F:\AI\Zcode\zcode-prompt-enhance\
 ├── overlay-prompt-enhance.js    # 渲染端浮层（IIFE 字符串注入）：按钮/读写/撤销栈/diff 卡
 ├── core/
 │   ├── prompt.mjs               # system prompt + frameUserPrompt + cleanEnhancedText
-│   ├── provider.mjs             # provider_config.json 解析 + 白名单 + 路由选择
-│   ├── enhancer.mjs             # SSE 客户端 + 竞速超时 + 错误码归一化
+│   ├── provider.mjs             # provider_config.json 候选路径探测 + 形状判定 + 白名单 + 路由选择
+│   ├── enhancer.mjs             # SSE 客户端 + 竞速超时 + 错误码归一化 + hadFirstChunk 标记
 │   ├── diff.mjs                 # token 级 LCS（中文逐字/英文词级）
-│   └── gates.mjs                # 熔断 → 限流 → 并发
+│   ├── gates.mjs                # 熔断 → 限流 → 并发
+│   └── trust.mjs                # 窗口 URL 可信判定（0.3.0 新增，纯函数、零依赖）
 ├── repatch_asar.mjs             # 解包→追加 __ZPE_PATCH__→重打包→替换（3 份备份）
 ├── uninstall.mjs                # 移除注入行（导出 stripLoader 供测试）
-├── test/                        # 5 个测试文件，89 项
-├── tools/                       # 8 个校验/探针脚本
+├── test/                        # 9 个测试文件，140 项
+├── tools/                       # 13 个校验/探针脚本
 ├── config.json / config.example.json
 └── README.md / README.en.md / CHANGELOG.md / DESIGN.md / APPENDIX.md / HANDOFF.md
 ```
@@ -133,7 +170,92 @@ F:\AI\Zcode\zcode-prompt-enhance\
 
 ## 4. 最近一轮变更与交付成果
 
-### 4.0 v0.2.0（当前）：实时跟随会话模型
+### 4.0 v0.3.0（当前）：加固与适配
+
+按一份外部开发任务书（T01–T11）执行，全部完成。核心是三个 P0：
+
+**（1）✨ 落点会压住发送按钮（T01）**
+
+`anchorFor` 的 fallback 退路是「卡片右下角内缩 40/34」。在 `test/anchor.test.mjs` 记录的真实矩形下
+（卡片 `right=1194`、发送按钮 `1153-1181 × 673-701`）它落在 `1154,679`，按钮占 `1154-1182 × 679-707`
+—— **矩形直接相交**。而工具行识别失败（UI 改版）正是 fallback 生效之时，所以"安全退路"恰好在最需要它的时候压住发送。
+
+修复：三个候选落点统一过 `settle()`。与任何原生按钮矩形相交时，沿同一行左右步进（8px × 最多 24 步）
+找空隙；找不到则返回 `hidden`（按钮隐藏），`place()` 里检测到 `left === null` 就 `display:none`。
+无按钮场景（`row.length === 0`）保持原行为直接落右下角。
+
+**踩坑记录**：重叠判定必须用 `top+height` / `left+width` 推导右下角。测试 mock 的按钮矩形没有
+`bottom` 字段，直接读 `r.bottom` 会得到 `undefined`，比较恒为 false —— 测试全绿但线上照压。
+
+**（2）卡片容器误判导致三处锚点漂移（T02）**
+
+`cardOf` 原先遇到「有边框或非透明背景」的祖先就当卡片。3.16.2 起输入框内部新增了带背景的模型切换条，
+那个内层容器被当成卡片，按钮 / diff 卡 / toast 一起漂。
+新增 `plausibleCard`：① 宽度 ≥ composer 的 90%；② 下半部有 ≥2 颗 16–44px 按钮。
+兜底 `return last` 保留（绝不返回 null，否则 `place()` 崩、按钮永久消失）。
+
+**（3）桥令牌注入面过宽（T04）**
+
+`isMainWindow` 只判 `wc.getType() === "window"`，不校验 URL；token 是进程级常量、永不过期。
+任一 window 型窗口若加载远程内容即可读到 token，用用户 apiKey 代发请求。
+- 新增 `core/trust.mjs`：默认只信任 `file:` / `app:` / `chrome-extension:` / `devtools:`，
+  远程主机必须显式列进 `config.json` 的 `allowed_window_hosts`。
+- 桥在 token 校验**之前**校验 `Host` 头必须是 `127.0.0.1:<port>` 或 `localhost:<port>`（防 DNS rebinding）。
+
+**其余（T03 / T05–T11）**
+
+| 任务 | 内容 |
+|---|---|
+| T03 | `via !== "cluster"` 持续 5s 提示一次；`place()` catch 首次 `console.warn`；`__zpeState()` 暴露 `anchorDegraded` / `anchorVia` |
+| T05 | `retryable` 改查 `describeError(code).retryable`（原先硬编码让 `invalid-credential` 变成"可重试"） |
+| T06 | `candidateConfigPaths` / `detectConfigShape` / `findConfig`；`/health` 增加 `configPath` + `configShape`；503 detail 三态化 |
+| T07 | `enhanceDraft` 记录 `hadFirstChunk`；桥只在"一个 token 都没吐"的超时才回落 |
+| T08 | `place()` 卡片矩形签名缓存；400ms 兜底改 `place(true)`。实测 420ms 内工具行扫描 26 → 2 次 |
+| T09 | `checkDraftChange` 用 `innerText` 廉价指纹短路；`syncDraftBaseline` 统一同步 |
+| T10 | `probeLexical` 探针，新错误码 `lexical-incompatible` |
+| T11 | 8 小项：`isDark` 透明背景误判、diff 首帧重取主题、toast 跟随主题、焦点往返、Esc 只拦卡内、error 随草稿复位、撤销栈深度可见、进度写 aria-label + `aria-expanded` |
+
+**测试基础设施的两个既有空洞（本轮才发现，值得记住）**
+
+1. `test/anchor.test.mjs` 的 mock `querySelectorAll` 只认 `"button"`，而 `findModelButton` 用的是
+   `"button, [role='button']"` → **model 路径在测试里恒不可达**，所有右侧场景其实都落到 fallback。
+   已让 mock 同时支持两种选择器。
+2. `tools/sim-overlay.mjs` 的 `FakeNode` 有两个致命空洞：
+   - `style` 不解析 `cssText`，`style.display` 恒为空串 → 所有 `display !== "none"` 判断都假绿
+     （diff 卡"可见"断言一直没真正生效）；
+   - 没有 `querySelector` → `positionDiff` 每帧抛 `TypeError`，被 `state.placeError` 静默吞掉，
+     diff 卡定位从未被验证过。
+
+   两处都已补。这也说明 T03 的"placeError 落日志"是有实际价值的 —— 正是它让第二个空洞暴露出来。
+
+**验证数据**（2026-10-26）
+
+| 项 | 命令 | 结果 |
+|---|---|---|
+| 单测 | `npm test` | **140 项全过**（基线 118 + 新增 22） |
+| 静态体检 | `node tools/preflight.mjs` | ALL PASS |
+| core 导入 | `node tools/check-core-url.mjs` | 4 个模块全 OK（含 trust） |
+| 模拟链路 | `node tools/sim-overlay.mjs` | ALL PASS（含 T08 缓存、T11 主题/无障碍/Esc 断言） |
+| 桥接自测 | `node tools/bridge-selftest.mjs` | ALL PASS（含真实模型调用、Host 校验、configShape） |
+| retryable 一致性 | §T05 单行命令 | `invalid-credential → false`，与 core 表一致 |
+
+### 4.0.1 v0.3.1：修复 0.3.0 注入回归
+
+0.3.0 首次真机重启后：状态栏项目正常、桥接服务在 `127.0.0.1:54965` 正常监听
+（`/health` 无 token 回 `403 {"code":"forbidden"}`，是我们桥的指纹），但 ✨ 按钮从未出现。
+
+定位过程：进程路径/启动时间/asar 核验 → loader 已加载（桥活着） → 问题锁定在「往窗口注入」一环
+→ 复查 0.3.0 改动：`web-contents-created` 入口被换成了 `isTrustedWindow`，而该事件触发时
+`wc.getURL()` 是空串 → `trust.check("") = false` → 主窗口被当场拒绝，`did-finish-load` 钩子永远没挂上。
+
+修复：两处入口（created + 初始遍历）恢复 `isMainWindow` 过滤，可信判定保留在 `inject()` 内。
+新增 `tools/inject-gate-selftest.mjs`：stub electron 模拟完整时序，旧代码 4 FAIL（负对照实测），
+修复后 ALL PASS；远程页面 / webview 拒绝的安全用例保持通过。
+
+**asar 不需要重打**：注入行只负责 import 外部 loader，本次只改部署路径上的 loader / overlay。
+overlay 改 mtime 即被运行中会话热注入；loader 修复需再次重启。
+
+### 4.1 v0.2.0：实时跟随会话模型
 
 用户提出的需求是「增强是否跟随当前对话的模型」。0.1.0 的答案是"不跟随"（固定用
 `config.json` 的模型）。0.2.0 改为**默认跟随**。
@@ -175,7 +297,7 @@ F:\AI\Zcode\zcode-prompt-enhance\
 | 跟随不可用模型 | cmcode（额度耗尽）→ 如期报 `quota` → 回落 workbuddy → 成功返回 482 字 |
 | 桥接自测 | 全过，无回归 |
 
-### 4.1 v0.1.0 真机验收结果
+### 4.2 v0.1.0 真机验收结果
 
 用户点击 ✨ 后截图确认功能正常：
 
@@ -189,7 +311,7 @@ F:\AI\Zcode\zcode-prompt-enhance\
 客观 DOM 断言（`tools/peek.mjs`，单次只读取证）：
 按钮 `[538,673,28,28]`、不压任何原生按钮、不与状态栏重叠、中心点命中自己、无重复 id、祖先链正确。
 
-#### 4.2 v0.1.0 真机暴露并修复的三个缺陷
+#### 4.2.1 v0.1.0 真机暴露并修复的三个缺陷
 
 | # | 缺陷 | 根因 | 修复 |
 |---|---|---|---|
@@ -206,7 +328,7 @@ verdictOld: FAIL  ← 修复前判据（DOM 与 state 都要相等）
 verdictNew: PASS  ← 修复后判据（只看 editor state）
 ```
 
-#### 4.3 其余完成项
+#### 4.2.2 其余完成项
 
 1. **P0 风险 R2 已打掉，且推翻了原设计方案**（详见 §5.4）。
 2. **修正 SSE 解码缺陷**：`String(Uint8Array)` 得到字节列表，SSE 解析全废；改用 `TextDecoder`。
@@ -220,7 +342,7 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 
 | 文件 | 说明 |
 |---|---|
-| `overlay-prompt-enhance.js` | 约 1200 行，最大单文件；浮层 + 撤销栈 + diff 卡 + 页内 diff 副本 |
+| `overlay-prompt-enhance.js` | 最大单文件；浮层 + 撤销栈 + diff 卡 + 页内 diff 副本 |
 | `inject-main.cjs` | 主进程；本地桥用 `http.createServer` + 随机端口 + 随机 token |
 | `core/enhancer.mjs` | SSE + 竞速超时 + `iterator.return()` 兜底（防上游继续计费） |
 
@@ -239,46 +361,67 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 
 ### 5.1.1 还需要你确认的（下次会话第一件事）
 
-- [ ] **diff 卡位置修复后的复验**：再点一次 ✨，确认关闭按钮 ✕ 完整可见、卡片不顶出屏幕
-- [ ] **撤销 ↺ 复验**：点 ↺ 能否退回原文
-- [ ] **取消复验**：增强过程中再点 ✨ 能否取消且草稿不变
-- [ ] **暗色/亮色主题**下 diff 卡对比度
+0.3.0 改了主进程代码，**必须先完全退出 ZCode 再重开**才能生效。重启后按顺序验：
+
+- [ ] **按钮仍出现**（可信窗口判定是否误拒了主窗口）。若消失：
+      `node repatch_asar.mjs --check` 确认注入仍在 → 看控制台是否有 `[zpe] skip untrusted window:` 日志
+      → 若有，说明主窗口 URL 不在白名单，把实际主机名填进 `config.json` 的 `allowed_window_hosts`
+- [ ] `window.__zpeState()` 返回对象含 `anchorDegraded` 与 `anchorVia`，且 `anchorVia === "cluster"`
+- [ ] **diff 卡位置**：关闭按钮 ✕ 完整可见、卡片不顶出屏幕
+- [ ] **撤销 ↺ 复验**：点 ↺ 能退回原文；连续两次增强后 title 显示「恢复原文（还可 2 步）」
+- [ ] **Esc 行为**：diff 卡内按 Esc 关闭；焦点不在卡内时 Esc 应交给宿主（不吞事件）
+- [ ] **取消复验**：增强过程中再点 ✨ 能取消且草稿不变
+- [ ] **浅色主题**下 diff 卡与 toast 配色正确（0.3.0 修了透明背景误判）
+- [ ] 工具行**被原生按钮完全占满**的极端情况下，✨ 应隐藏而不是压按钮（这是有意的取舍）
 
 若按钮不出现（例如 ZCode 升级后），排查顺序：
 
 1. `node repatch_asar.mjs --check` → 确认 marker 还在
 2. 若丢失，完全退出 ZCode，跑 `node repatch_asar.mjs`，再打开
 3. 页面里查 `window.__ZPE_BOOT__`（应有 port/token）与 `window.__zpeState()`（返回挂载态）
-4. `window.__zpeState().placeError` 非空表示定位抛异常
+4. `window.__zpeState().placeError` 非空表示定位抛异常（0.3.0 起首次异常也会 `console.warn`）
+5. `window.__zpeState().anchorVia` 不是 `cluster` 表示定位在降级运行
 
 ### 5.2 待办（按优先级）
 
 | # | 待办 | 说明 |
 |---|---|---|
-| P1 | **真实点击走查** | AGENTS.md 要求 UI 功能交付前必须用真实鼠标走完关键路径。已在模拟 DOM 跑通全链路（`tools/sim-overlay.mjs`），但那不能替代真实走查 |
+| P0 | **0.3.0 真机重启验证** | 本轮只做到 stdio 级验证（140 单测 + 4 个工具全绿）。按 AGENTS.md，UI 交付前必须真实点击走查 |
+| P1 | **真实点击走查** | `tools/sim-overlay.mjs` 已覆盖大部分链路，但不替代真实鼠标走查 |
 | P2 | 上下文感知 | `core/context.mjs` 未写。`inject-main.cjs` 已预留 `context_enabled` 与 `payload.context` 透传，`prompt.mjs` 已有 `CONTEXT_SYSTEM_ADDITION` |
-| P2 | 流式预览 | 目前进度只更新按钮 tooltip，没有在草稿区做流式预览（避免与用户编辑打架） |
-| P3 | 设置面板 | 目前只能改 `config.json`。Manifest `userConfig` 的 `sensitive` 项在 ZCode 里无法输入/持久化，所以不做 IPC 面板的话就只能走文件 |
+| P2 | 流式预览 | 目前进度只更新按钮 tooltip/aria-label，没有在草稿区做流式预览（避免与用户编辑打架） |
+| P2 | 插件化双轨 | 用官方 hooks 做「提交时增强」兜底（`UserPromptSubmit` 只有 `additionalContext`，无法原地回填）。任务书 §5.B |
+| P2 | 构建期拆分 | 单文件 + diff 双份维护（`core/diff.mjs` 与 overlay 内副本，由 `test/overlay-diff.test.mjs` 强制一致）。任务书 §5.C |
+| P3 | 设置面板 | 目前只能改 `config.json`。Manifest `userConfig` 的 `sensitive` 项在 ZCode 里无法输入/持久化 |
 | P3 | 升级检测提示 | 增加"检测到 ZCode 版本变化 → 提示重跑 repatch"的启动检查 |
 | P4 | `/enhance` 兜底命令 | E 失效期间可用：一个 skill + command，结果落对话 |
 
-### 5.4 已验证的结论（含真机）
+### 5.3 已验证的结论（含真机）
+
+**v0.3.0（2026-10-26，stdio 级）**
 
 | 验证项 | 工具 | 结果 |
 |---|---|---|
-| 单元测试 | `npm test` | **102 项全过** |
-| 注入前静态体检 | `tools/preflight.mjs` | 全过（id 唯一、id 前缀、无 apiKey、安全断言） |
-| ✨ 定位算法（真实矩形） | `test/anchor.test.mjs` | 全过 |
-| 多行草稿往返 | `tools/check-multiline.mjs` | 全过 |
-| 浮层完整交互链路 | `tools/sim-overlay.mjs` | 全过，含 rAF 停摆回归 |
-| 桥接层（真实模型） | `tools/bridge-selftest.mjs` | 全过 |
+| 单元测试 | `npm test` | **140 项全过**（基线 118 + 新增 22） |
+| 注入前静态体检 | `tools/preflight.mjs` | ALL PASS |
+| core 导入 | `tools/check-core-url.mjs` | 4 个模块全 OK（含新增 `core/trust.mjs`） |
+| 浮层完整交互链路 | `tools/sim-overlay.mjs` | ALL PASS（含 rAF 停摆、定位缓存、主题/无障碍/Esc 断言） |
+| 桥接层（真实模型） | `tools/bridge-selftest.mjs` | ALL PASS（含 Host 校验、`configShape`、真实调用 3.5–5.2s） |
+| retryable 一致性 | `node -e "…describeError…"` | `invalid-credential → false`，与 core 表一致 |
+| **0.3.0 真机验证** | — | **未做**（需先重启 ZCode，见 §5.1.1） |
+
+**v0.1.0 / v0.2.0（历史真机结论）**
+
+| 验证项 | 工具 | 结果 |
+|---|---|---|
 | 真实模型输出质量 | `tools/e2e-model.mjs` | 中英文各一，六段式完整、语言一致 |
 | patched asar 可加载 | `tools/check-asar-loadable.mjs` | 全过 |
-| **真机点击（端到端）** | 用户操作 + 截图 | **通过**（见 §4.1） |
+| **真机点击（端到端）** | 用户操作 + 截图 | **通过**（见 §4.2） |
 | **真机 DOM 断言** | `tools/peek.mjs` | 全部 `issues: none` |
 | **真机回读一致性** | `tools/verify-writedraft.mjs` | `lexMatch: true`（159 字多行样本） |
+| 多行草稿往返 | `tools/check-multiline.mjs` | 全过 |
 
-#### 5.4.1 探针使用的注意事项（重要）
+#### 5.3.1 探针使用的注意事项（重要）
 
 调试用的探针是通过**状态栏项目 `overlay.js` 的 mtime 热更新通道**注入的。每次往该文件追加/改写内容，
 都会触发状态栏 overlay 重新注入执行，**连带把我的浮层实例也重置**（撤销栈清空、diff 卡关闭）。
@@ -289,7 +432,7 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 - 不要用探针去读取"用户刚点完的浮层状态" —— 探针自己会把那个状态清掉；
 - 验证功能请直接看界面，或用 `tools/peek.mjs` 做单次只读取证。
 
-### 5.3 已知限制（非缺陷，是设计取舍）
+### 5.4 已知限制（非缺陷，是设计取舍）
 
 1. **跟随会话模型依赖读 DOM** —— 当前选中的模型存在 React 内部 state 里，渲染端读不到，
    只能从工具行按钮的 `aria-label` 反推。界面结构变化会导致读不到，此时回落到默认模型
@@ -343,6 +486,15 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 | 15 | **`innerText` 与 editor state 不是等价表示** | Lexical 用 `<p>` 渲染，`innerText` 在段落间多一个换行。判等一律用 editor state |
 | 16 | **窗口隐藏时 rAF 会被暂停** | 定位循环必须有 `setInterval` 兜底，否则切后台再回来按钮就死了 |
 | 17 | **探针会重置浮层状态** | 状态栏 `overlay.js` 热更新会重建浮层实例，探针只用于一次性取证 |
+| 18 | **矩形 mock 缺 `bottom`/`right` 字段会让重叠判定假绿** | 一律用 `top+height` / `left+width` 推导；直接读 `r.bottom` 得到 `undefined`，比较恒 false |
+| 19 | **测试 mock 的选择器集合必须覆盖被测代码用到的全部选择器** | `anchor.test.mjs` 曾只支持 `"button"`，而 `findModelButton` 用 `"button, [role='button']"` → model 路径恒不可达 |
+| 20 | **`FakeNode.style` 必须展开 `cssText`** | 否则 `style.display` 恒为空串，`display !== "none"` 判断全部假绿（sim 里 diff 卡"可见"断言一度形同虚设） |
+| 21 | **`place()` 的异常只写 `state.placeError` 等于黑盒** | 0.3.0 起首次异常 `console.warn`；正是它暴露了 sim 里 `positionDiff` 每帧抛 `TypeError` 的旧空洞 |
+| 22 | **`anchorFor`/`findModelButton` 的签名不能改** | 测试用正则从源码抠函数体再 `new Function` 求值，签名一变即崩 |
+| 23 | **`anchorFor` 内不得调用 `closest()` / `style` / `offsetWidth`** | 该 mock 只提供 `getBoundingClientRect` + `getAttribute`，其它调用会 TypeError |
+| 24 | **`cardOf` 绝不能返回 null** | `place()` 直接崩、按钮永久消失；无候选时 `return last` |
+| 25 | **桥的 Host 校验必须用 `node:http` 验证，不能用 `fetch`** | undici 把 `Host` 当禁止修改的头，传了也会被忽略，断言等于没测 |
+| 26 | **`web-contents-created` 时窗口还没有 URL** | 创建时只能按类型过滤，可信判定放在 `inject()` 内（URL 已就绪）；否则空 URL 被拒、钩子永不挂上（v0.3.0 真机事故） |
 
 ### 6.4 证据查证命令
 

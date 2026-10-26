@@ -145,11 +145,43 @@ node tools/check-follow-live.mjs      # resolve and really call each route
 | Click ↺ | Restore the previous version; repeat up to 8 levels |
 | Edit the draft yourself | The whole undo stack is invalidated |
 | Edit the draft during a request | Result is discarded, with a notice |
-| Press Esc while the diff card is open | Close it |
+| Press Esc while the diff card is open | Close it (only when focus is inside the card; the host's own Esc handling is untouched) |
+| Button position stays wrong | After 5 s a one-time notice: "button position may be inaccurate (UI layout changed)" |
+| Editing the draft clears the undo stack | Notice: "undo history cleared" |
 
 ---
 
 ## Maintenance
+
+### Security model (since 0.3.0)
+
+The bridge token is a random constant with the lifetime of the process and **never expires**, so the
+surface that can see it must be narrowed:
+
+- Tokens are injected only into **trusted windows**: by default only local packaging protocols
+  (`file:` / `app:` / `chrome-extension:` / `devtools:`). Remote pages get nothing unless their host is
+  explicitly listed in `config.json`:
+  ```json
+  { "allowed_window_hosts": ["zcode.z.ai"] }
+  ```
+  The main window currently loads via `loadFile(.../renderer/index.html)`, i.e. `file:`, so the default
+  configuration works as-is.
+- The bridge checks the `Host` header **before** the token: it must be `127.0.0.1:<port>` or
+  `localhost:<port>`. This blocks DNS rebinding — an attacker domain can resolve to 127.0.0.1 (so the
+  source IP is local too), but the `Host` header still carries their domain.
+
+### Diagnostics
+
+```bash
+curl -s -H "x-zpe-token: <token>" http://127.0.0.1:<port>/health
+```
+
+`/health` reports `configPath` and `configShape` (`anthropic-v2` / `unknown` / `missing`), which
+separates "no config at all / config directory moved / config format changed" instead of collapsing all
+three into one `unsupported`.
+
+In the page, `window.__zpeState()` also exposes `anchorDegraded` and `anchorVia`. Any `anchorVia` other
+than `cluster` means the toolbar no longer looks the way we expect and positioning is running degraded.
 
 ### After a ZCode update
 
@@ -171,11 +203,13 @@ and re-injects on change (it validates syntax with `new Function` first, so a ha
 the running page).
 
 ```bash
-npm test                            # 102 unit tests
+npm test                            # 140 unit tests
 node tools/preflight.mjs            # static checks (unique ids, security, interface alignment)
-node tools/bridge-selftest.mjs      # bridge self-test, including a real model call
+node tools/bridge-selftest.mjs      # bridge self-test incl. Host check and a real model call
+node tools/inject-gate-selftest.mjs # injection-gate lifecycle self-test (stubbed electron)
+node tools/check-core-url.mjs       # core modules import correctly through file:// URLs
 node tools/check-asar-loadable.mjs  # confirm the patched asar still loads
-node tools/sim-overlay.mjs          # full interaction path in a simulated DOM (incl. rAF-stall regression)
+node tools/sim-overlay.mjs          # full interaction path in a simulated DOM (rAF stall, position cache, a11y)
 node tools/check-multiline.mjs      # multi-line draft round-trip
 node tools/verify-writedraft.mjs    # live multi-line write consistency (judged by editor state)
 node tools/peek.mjs                 # one-shot live inspection of the overlay + DOM assertions
@@ -199,6 +233,11 @@ Only this project's line is removed; the status bar's injection is untouched.
 - Following the session model depends on reading the toolbar button's label. A UI restructure can make
   that unreadable; the enhancer then falls back to the default model (still functional, just no longer
   following).
+- `allowed_window_hosts` defaults to empty. If a future release switches the main window to remote
+  loading, the button disappears; list the actual host to fix it. Do **not** default to allowing all
+  `http`/`https`.
+- When the toolbar is completely full, ✨ hides rather than overlapping the send button. That is a
+  deliberate trade-off, not a bug.
 
 ## Design notes
 
@@ -212,14 +251,19 @@ Rules that came out of real failures:
 - **Verify writes against the editor state, never against `innerText`.**
   Lexical renders each paragraph as a `<p>`, and `innerText` inserts an extra newline between blocks
   (`A\nB` reads as `A\n\nB`). The write itself is correct, but comparing `innerText` would reject
-  every multi-line write as a failure.
+  every multi-line write as a failure. Since 0.3.0 `innerText` is used only to short-circuit the polling
+  loop when nothing changed — never as a comparison basis.
 - **Never drive positioning with `requestAnimationFrame` alone.** Chromium suspends rAF while the window
   is hidden; the loop then stalls, leaving the button at a stale position (on top of a native button)
   and unresponsive. A `setInterval` fallback is required.
+- **Hide rather than cover native UI.** If no gap avoids every native button rect, positioning returns
+  `hidden`. The "bottom-right corner" fallback overlapped the send button outright under the real
+  3.16.3 rects — a safety net is only safe once it has been verified.
 - **The API key stays in the main process.** The renderer talks to a loopback bridge (random port +
-  random token); credentials are never reachable from the page.
+  random token + Host check); credentials are never reachable from the page.
 - **A timeout must explicitly close the upstream stream.** Merely stopping the wait leaves the upstream
-  generating tokens — and billing for them.
+  generating tokens — and billing for them. Timeout fallback only runs when not a single token was
+  received (`hadFirstChunk === false`); otherwise one click bills twice.
 - **The overlay lives on `body` with absolute positioning.** Never inside a React-managed subtree
   (re-renders erase it), and never touching the card's bottom padding (the status bar uses it).
 

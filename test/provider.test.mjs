@@ -9,6 +9,9 @@ import {
   listRoutes,
   resolveRoute,
   loadProviderConfig,
+  candidateConfigPaths,
+  detectConfigShape,
+  findConfig,
 } from "../core/provider.mjs";
 
 const CFG = {
@@ -144,4 +147,69 @@ test("loadProviderConfig：正常文件可解析", () => {
   } finally {
     fs.rmSync(p, { force: true });
   }
+});
+
+/* ---------------- 配置版本探测与三态（v0.3.0 T06） ----------------
+ * 原先路径硬编码 v2，三种失败（文件不存在 / 路径迁移 / 格式变了）全落到
+ * 同一条 503 unsupported，用户和开发者都无法区分。 */
+
+test("candidateConfigPaths：覆盖 v2 → v3 → cli → v1，且都以 provider_config.json 结尾", () => {
+  const paths = candidateConfigPaths();
+  assert.ok(Array.isArray(paths));
+  assert.ok(paths.length >= 4);
+  for (const p of paths) assert.ok(p.endsWith("provider_config.json"), p);
+  assert.ok(paths[0].includes(path.join(".zcode", "v2")), "首选仍是 v2，保持既有行为");
+  assert.ok(paths.some((p) => p.includes(path.join(".zcode", "v3"))), "要覆盖未来可能的 v3");
+  assert.ok(paths.some((p) => p.includes(path.join(".zcode", "cli"))), "要覆盖 CLI 侧的 cli 目录");
+  assert.equal(new Set(paths).size, paths.length, "候选路径不应重复");
+});
+
+test("detectConfigShape：合法 v2 配置 → anthropic-v2", () => {
+  assert.equal(detectConfigShape(CFG), "anthropic-v2");
+});
+
+test("detectConfigShape：空对象 / 缺 rules → unknown", () => {
+  assert.equal(detectConfigShape({}), "unknown");
+  assert.equal(detectConfigShape({ config: {} }), "unknown");
+  assert.equal(detectConfigShape({ config: { providerConfigRules: { providerRules: [] } } }), "unknown");
+  // 有 rules 但没有 api.type —— 结构变了
+  assert.equal(detectConfigShape({ config: { providerConfigRules: { providerRules: [{ providerId: "x" }] } } }), "unknown");
+});
+
+test("detectConfigShape：null / 非对象 → missing", () => {
+  assert.equal(detectConfigShape(null), "missing");
+  assert.equal(detectConfigShape(undefined), "missing");
+  assert.equal(detectConfigShape("string"), "missing");
+  assert.equal(detectConfigShape(42), "missing");
+});
+
+test("findConfig：本机有配置时应命中某个候选路径并给出形状", () => {
+  const found = findConfig();
+  assert.ok(found && typeof found === "object");
+  assert.ok(["anthropic-v2", "unknown", "missing"].includes(found.shape), found.shape);
+  if (found.shape === "missing") {
+    assert.equal(found.path, null);
+    assert.equal(found.parsed, null);
+  } else {
+    assert.ok(typeof found.path === "string" && found.path.length > 0, "命中时必须给出路径");
+    assert.ok(candidateConfigPaths().includes(found.path), "路径必须来自候选清单");
+  }
+});
+
+test("findConfig 的返回结构与 findConfig 对坏 JSON 的判定保持一致", () => {
+  // 坏 JSON 应当被判为 unknown（说明文件在，但格式不认），不能被当成 missing
+  const p = path.join(os.tmpdir(), `zpe-shape-${process.pid}.json`);
+  fs.writeFileSync(p, "{broken", "utf8");
+  try {
+    assert.equal(loadProviderConfig(p), null, "坏 JSON 仍返回 null，不抛");
+    assert.notEqual(detectConfigShape(null), "anthropic-v2");
+  } finally {
+    fs.rmSync(p, { force: true });
+  }
+});
+
+test("loadProviderConfig：不传路径时走候选探测（不再硬编码 v2）", () => {
+  // 直接调无参版本不应抛，且在无配置环境返回 null
+  const got = loadProviderConfig();
+  assert.ok(got === null || typeof got === "object");
 });

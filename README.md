@@ -142,11 +142,38 @@ node tools/check-follow-live.mjs      # 真实解析 + 真实调用每个路由
 | 点 ↺ | 退回上一版；连续增强可逐层回退（最多 8 层） |
 | 自己改动草稿 | 撤销栈整栈失效（避免撤销到你没预期的旧版本） |
 | 增强过程中改草稿 | 结果被丢弃，提示"草稿已修改，已放弃增强结果" |
-| 弹出差异卡时按 Esc | 关闭差异卡 |
+| 弹出差异卡时按 Esc | 关闭差异卡（仅当焦点在卡片内，不影响宿主自己的 Esc 处理） |
+| 按钮位置持续不对 | 5 秒后提示一次"按钮位置可能不准（界面布局已变化）" |
+| 自己改动草稿导致撤销栈清空 | 提示"撤销历史已清空" |
 
 ---
 
 ## 维护
+
+### 安全模型（0.3.0 起）
+
+桥 token 是进程生命周期内的随机常量，**永不过期**。因此注入面本身必须收窄：
+
+- 只向**可信窗口**注入：默认仅本地打包协议（`file:` / `app:` / `chrome-extension:` / `devtools:`）。
+  远程页面默认一律不注入，除非把主机名显式写进 `config.json`：
+  ```json
+  { "allowed_window_hosts": ["zcode.z.ai"] }
+  ```
+  当前实测主窗口走 `loadFile(.../renderer/index.html)`，即 `file:`，默认配置即可正常工作。
+- 桥在 token 校验**之前**校验 `Host` 头必须是 `127.0.0.1:<port>` 或 `localhost:<port>`
+  （防 DNS rebinding：攻击者域名可解析到 127.0.0.1，但 Host 头会是其域名）。
+
+### 诊断接口
+
+```bash
+curl -s -H "x-zpe-token: <token>" http://127.0.0.1:<port>/health
+```
+
+`/health` 返回 `configPath` 与 `configShape`（`anthropic-v2` / `unknown` / `missing`），
+用来区分"没有配置 / 配置目录改版 / 配置格式变了"三种失败，不用再靠猜。
+
+页面内 `window.__zpeState()` 额外暴露 `anchorDegraded` 与 `anchorVia`。
+`anchorVia` 不是 `cluster` 就说明工具行布局已经不是已知形状，定位正在降级运行。
 
 ### ZCode 升级后
 
@@ -167,11 +194,13 @@ node -e "const b=require('fs').readFileSync('F:/software/Zcode/resources/app.asa
 变化后会自动重注入（会先用 `new Function` 校验语法，写到一半的保存不会污染运行中的页面）。
 
 ```bash
-npm test                          # 102 项单测
+npm test                          # 140 项单测
 node tools/preflight.mjs          # 静态体检（id 唯一性、安全断言、接口对齐）
-node tools/bridge-selftest.mjs    # 桥接层自测（含真实模型调用）
+node tools/bridge-selftest.mjs    # 桥接层自测（含 Host 校验与真实模型调用）
+node tools/inject-gate-selftest.mjs  # 注入门禁时序自测（stub electron，防空 URL 拒注回归）
+node tools/check-core-url.mjs     # core 模块能否用 file:// URL 正常导入
 node tools/check-asar-loadable.mjs  # 确认 patched asar 可正常加载
-node tools/sim-overlay.mjs        # 模拟 DOM 跑完整交互链路（含 rAF 停摆回归）
+node tools/sim-overlay.mjs        # 模拟 DOM 跑完整交互链路（rAF 停摆、定位缓存、无障碍断言）
 node tools/check-multiline.mjs    # 多行草稿读写往返
 node tools/verify-writedraft.mjs  # 真机多行写入一致性（editor state 判定）
 node tools/peek.mjs               # 真机单次取证：读取当前浮层状态与 DOM 断言
@@ -193,6 +222,9 @@ node uninstall.mjs    # 移除注入行，还原客户端（需先完全退出 Z
 - ZCode 每次升级会整份替换 `app.asar`，注入随之丢失（按钮静默消失）。需重跑 `node repatch_asar.mjs` 并重启。
 - 跟随会话模型依赖读取工具行按钮的标签文本。界面结构变化会导致读不到，
   此时回落到默认模型（功能仍可用，只是不再跟随）。
+- `allowed_window_hosts` 默认为空。若某次改版把主窗口改成远程加载，按钮会消失；
+  把实际主机名填进该字段即可。**不要**为了省事默认放行所有 `http/https`。
+- 工具行被原生按钮完全占满时，✨ 会隐藏而不是叠在发送按钮上 —— 这是有意的取舍，不是故障。
 
 ## 设计要点
 
@@ -206,10 +238,15 @@ node uninstall.mjs    # 移除注入行，还原客户端（需先完全退出 Z
 - **回读校验以 editor state 为权威，不拿 `innerText` 判等。**
   Lexical 用 `<p>` 渲染段落，`innerText` 在段落之间会多一个换行（`A\nB` 读成 `A\n\nB`）。
   写入本身没问题，但用 `innerText` 判等会把每一次多行写入都误判成失败。
+  0.3.0 起 `innerText` 只用于轮询的"没变"短路，绝不参与判等。
 - **定位循环不能只靠 `requestAnimationFrame`。** 窗口隐藏时 Chromium 会暂停 rAF，
   循环停摆后按钮会停在旧位置（压住原生按钮）且失去响应。已加 `setInterval` 兜底。
-- **apiKey 只在主进程**。渲染端通过本地回环桥（随机端口 + 随机 token）请求，页面里拿不到凭据。
+- **落点宁可隐藏也不遮挡原生 UI。** 找不到不压任何原生按钮的空隙时返回 `hidden`。
+  「贴右下角」这条退路在 3.16.3 的真实矩形下会直接压住发送按钮 ——
+  安全退路必须被验证过才叫安全。
+- **apiKey 只在主进程**。渲染端通过本地回环桥（随机端口 + 随机 token + Host 校验）请求，页面里拿不到凭据。
 - **超时必须显式关闭上游流**。仅停止等待会让上游继续产 token、照旧计费。
+  超时回落只在"一个 token 都没吐"（`hadFirstChunk === false`）时执行，否则一次点击会烧双份额度。
 - **浮层挂 `body` 绝对定位**，不插入 React 管理的子树（重渲染会擦掉），也不碰卡片让位边距（状态栏在用）。
 
 ## 许可

@@ -33,14 +33,85 @@ export function defaultConfigPath() {
   return path.join(os.homedir(), ".zcode", "v2", "provider_config.json");
 }
 
+/**
+ * 候选配置文件路径，按优先级排列。
+ *
+ * 历史上已经发生过一次 v1 → v2 迁移（CLI 侧用的是 ~/.zcode/cli/config.json），
+ * 所以下一次目录改版几乎必然再来一次。把候选集中在这里，路径迁移就只是改一行。
+ */
+export function candidateConfigPaths() {
+  const home = os.homedir();
+  return [
+    path.join(home, ".zcode", "v2", "provider_config.json"),
+    path.join(home, ".zcode", "v3", "provider_config.json"),
+    path.join(home, ".zcode", "cli", "provider_config.json"),
+    path.join(home, ".zcode", "v1", "provider_config.json"),
+  ];
+}
+
+/**
+ * 判断配置的形状，用于把"文件不存在 / 路径迁移 / 格式变了"三种失败区分开。
+ *
+ * @returns {"anthropic-v2" | "unknown" | "missing"}
+ */
+export function detectConfigShape(parsed) {
+  if (!parsed || typeof parsed !== "object") return "missing";
+  const rules = parsed?.config?.providerConfigRules?.providerRules;
+  if (!Array.isArray(rules)) return "unknown";
+  if (rules.length === 0) return "unknown";
+  const first = rules[0];
+  const okShape =
+    first &&
+    typeof first === "object" &&
+    !!first.config &&
+    typeof first.config === "object" &&
+    !!first.config.api &&
+    typeof first.config.api === "object" &&
+    typeof first.config.api.type === "string";
+  return okShape ? "anthropic-v2" : "unknown";
+}
+
+/**
+ * 遍历候选路径，返回第一个能读到的文件及其形状。
+ * 解析失败的文件也要返回（shape 为 unknown），否则"格式变了"会被误报成"文件不存在"。
+ *
+ * @returns {{path: string|null, parsed: object|null, shape: string}}
+ */
+export function findConfig() {
+  for (const p of candidateConfigPaths()) {
+    let raw;
+    try {
+      raw = fs.readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { path: p, parsed: null, shape: "unknown" };
+    }
+    return { path: p, parsed, shape: detectConfigShape(parsed) };
+  }
+  return { path: null, parsed: null, shape: "missing" };
+}
+
 /** 读取并解析 provider_config.json；任何异常都返回 null（不抛）。 */
 export function loadProviderConfig(file) {
   try {
-    const raw = fs.readFileSync(file || defaultConfigPath(), "utf8");
-    const parsed = JSON.parse(raw);
-    const rules = parsed?.config?.providerConfigRules?.providerRules;
+    if (file) {
+      const raw = fs.readFileSync(file, "utf8");
+      const parsed = JSON.parse(raw);
+      const rules = parsed?.config?.providerConfigRules?.providerRules;
+      if (!Array.isArray(rules)) return null;
+      return parsed;
+    }
+    // 未指定路径：走候选探测（兼容 v2 / v3 / cli / v1 的路径迁移）
+    const found = findConfig();
+    if (!found.parsed) return null;
+    const rules = found.parsed?.config?.providerConfigRules?.providerRules;
     if (!Array.isArray(rules)) return null;
-    return parsed;
+    return found.parsed;
   } catch {
     return null;
   }

@@ -29,7 +29,7 @@
   var PORT = BOOT.port || 0;
   var TOKEN = BOOT.token || "";
   var MAX_CHARS = BOOT.maxInputChars || 12000;
-  var VERSION = BOOT.version || "0.2.0";
+  var VERSION = BOOT.version || "0.3.1";
 
   if (!PORT || !TOKEN) {
     console.error("[zpe] missing boot payload; overlay not mounted");
@@ -55,6 +55,7 @@
     internal: "增强失败，请稍后重试",
     forbidden: "桥接鉴权失败",
     "draft-changed": "草稿已修改，已放弃增强结果",
+    "lexical-incompatible": "编辑器版本不兼容，请更新插件",
   };
   function errText(code) {
     return ERR_TEXT[code] || ERR_TEXT.internal;
@@ -132,6 +133,39 @@
     }
   }
 
+  /* 容器合理性校验：候选卡片必须同时满足两个结构事实 */
+  function plausibleCard(p, compRect) {
+    var r;
+    try {
+      r = p.getBoundingClientRect();
+    } catch (e) {
+      return false;
+    }
+    // ① 宽到能包住输入框
+    if (r.width < compRect.width * 0.9) return false;
+    // ② 下半部真的有工具行（≥2 颗可点按钮）
+    var btns;
+    try {
+      btns = p.querySelectorAll("button");
+    } catch (e) {
+      return false;
+    }
+    if (!btns || !btns.length) return false;
+    var cnt = 0;
+    for (var i = 0; i < btns.length; i++) {
+      var br;
+      try {
+        br = btns[i].getBoundingClientRect();
+      } catch (e) {
+        continue;
+      }
+      if (br.width < 16 || br.height < 16 || br.height > 44) continue;
+      if (br.top < r.top + r.height * 0.45) continue;
+      cnt += 1;
+    }
+    return cnt >= 2;
+  }
+
   function cardOf(n) {
     var cr = n.getBoundingClientRect();
     var p = n.parentElement;
@@ -140,9 +174,12 @@
     for (; p && p !== document.body && i < 8; p = p.parentElement, i++) {
       var r = p.getBoundingClientRect();
       if (r.height > cr.height * 8 + 80) break;
-      if (isVisualBox(p)) return p;
+      // 光"有边框或背景"不足以判定是卡片：3.16.2 起输入框内部新增了带背景的
+      // 模型切换条，只按 isVisualBox 判会把那个内层容器当卡片，三处锚点全漂。
+      if (isVisualBox(p) && plausibleCard(p, cr)) return p;
       last = p;
     }
+    // 没有候选满足时保持原兜底：绝不返回 null，否则 place() 直接崩、按钮永久消失
     return last;
   }
 
@@ -212,6 +249,23 @@
   }
 
   /**
+   * 探针：用最小 editor state 试一次 parse，判断 Lexical 的 schema 是否还认得我们。
+   * 写入失败时先跑它，用来区分"编辑器版本不兼容"与"业务逻辑错误"，
+   * 否则用户只看到"写入草稿失败"，排障只能靠猜。
+   */
+  function probeLexical(ed) {
+    try {
+      var empty = ed.parseEditorState({
+        root: { children: [], direction: "ltr", format: "", indent: 0, type: "root", version: 1 },
+      });
+      var json = empty && empty.toJSON ? empty.toJSON() : null;
+      return !!(json && json.root);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * 写入草稿并回读校验。
    *
    * 校验基准是 **Lexical 的 editor state**，不是 DOM 的 innerText：
@@ -236,6 +290,8 @@
       if (typeof n.focus === "function") n.focus({ preventScroll: true });
       ed.setEditorState(buildState(ed, want));
     } catch (e) {
+      // 先探针：schema 不认了（编辑器大版本变更）与业务错误要区分开
+      if (!probeLexical(ed)) return { ok: false, reason: "lexical-incompatible" };
       return { ok: false, reason: "set-state-failed: " + ((e && e.message) || e) };
     }
     var lex = editorText(ed);
@@ -248,6 +304,8 @@
     if (lex === null && dom !== "") {
       return { ok: true, wrote: want, degraded: "no-editor-state" };
     }
+    // 写入成功但回读不一致：同样先探针，排除"编辑器不认这种 state"的可能
+    if (!probeLexical(ed)) return { ok: false, reason: "lexical-incompatible" };
     return {
       ok: false,
       reason: "readback-mismatch",
@@ -269,6 +327,15 @@
     disabledReason: "",
     model: "",
     restartNeeded: false, // 主进程代码已变更，需要重启 ZCode
+    anchorDegraded: false, // 定位已降级到非 cluster 路径或隐藏
+    anchorWarned: false, // 降级告警是否已提示过（会话内一次）
+    anchorSince: 0, // 降级开始时间戳
+    lastAnchor: null, // 最近一次落点 { left, top, via }
+    lastCardSig: "", // 卡片矩形签名缓存（避免每帧重算 anchorFor）
+    lastCheapText: null, // innerText 廉价指纹（轮询短路）
+    lastCloseBtn: null, // diff 卡关闭按钮引用（关闭后还焦到 ⇄）
+    placeError: "", // 最近一次 place() 异常
+    placeErrorLogged: false, // 是否已把 place 异常打到控制台（只打首次）
   };
   var abortCtl = null;
   var rafId = 0;
@@ -385,22 +452,57 @@
   }
 
   /* ---------------- 主题适配 ---------------- */
+  /**
+   * 判断当前是否暗色主题。
+   *
+   * 关键：透明背景（rgba(0,0,0,0)）不能当成"黑色"。初版直接读 body 的
+   * backgroundColor，浅色主题下 body 常是 transparent，于是被稳定误判成暗色，
+   * 浅色用户全程看到暗色卡片。这里依次探测 :root → html → body，
+   * 跳过 alpha=0 的候选；再兜底读 color-scheme；最后跟随系统媒体查询。
+   */
   function isDark() {
-    try {
-      var bg = getComputedStyle(document.body).backgroundColor;
-      var m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-      if (!m) return true;
-      var lum = (0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3]) / 255;
-      return lum < 0.5;
-    } catch (e) {
-      return true;
+    // :root 就是 documentElement；两层都要探，任一层有真实颜色就定下来
+    var probes = [document.documentElement, document.body];
+    for (var i = 0; i < probes.length; i++) {
+      var node = probes[i];
+      if (!node) continue;
+      try {
+        var bg = getComputedStyle(node).backgroundColor;
+        var m = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?/);
+        if (!m) continue;
+        // alpha 为 0（含缺省但 rgb() 写法）时这一层没有实际颜色，继续往上找
+        var alpha = m[4] === undefined ? 1 : parseFloat(m[4]);
+        if (!(alpha > 0)) continue;
+        var lum = (0.299 * +m[1] + 0.587 * +m[2] + 0.114 * +m[3]) / 255;
+        return lum < 0.5;
+      } catch (e) {}
     }
+    // 兜底 1：color-scheme 计算值（宿主若显式声明了 light/dark）
+    try {
+      var cs = getComputedStyle(document.documentElement).colorScheme || "";
+      if (/dark/i.test(cs) && !/light/i.test(cs)) return true;
+      if (/light/i.test(cs) && !/dark/i.test(cs)) return false;
+    } catch (e) {}
+    // 兜底 2：系统偏好
+    try {
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) return true;
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) return false;
+    } catch (e) {}
+    return true;
   }
   function applyTheme() {
     var dark = isDark();
-    diffCard.style.setProperty("--zpe-bg", dark ? "#1e1e20" : "#ffffff");
-    diffCard.style.setProperty("--zpe-fg", dark ? "#e8e8ea" : "#1c1c1e");
+    var bg = dark ? "#1e1e20" : "#ffffff";
+    var fg = dark ? "#e8e8ea" : "#1c1c1e";
+    diffCard.style.setProperty("--zpe-bg", bg);
+    diffCard.style.setProperty("--zpe-fg", fg);
     diffCard.style.borderColor = dark ? "rgba(255,255,255,.18)" : "rgba(0,0,0,.15)";
+    // toast 也用同一套变量，否则浅色主题下与宿主割裂
+    toast.style.setProperty("--zpe-bg", bg);
+    toast.style.setProperty("--zpe-fg", fg);
+    toast.style.background = bg;
+    toast.style.color = fg;
+    toast.style.borderColor = dark ? "rgba(255,255,255,.18)" : "rgba(0,0,0,.15)";
   }
 
   /* ---------------- toast ---------------- */
@@ -482,7 +584,13 @@
     }
 
     undoBtn.style.display = state.stack.length ? "inline-flex" : "none";
+    // 撤销栈深度对用户不可见时，↺ 是个"不知道还能退几步"的盲盒按钮
+    var depth = state.stack.length;
+    var undoTip = depth > 1 ? "恢复原文（还可 " + depth + " 步）" : "恢复原文";
+    undoBtn.title = undoTip;
+    undoBtn.setAttribute("aria-label", undoTip);
     diffBtn.style.display = state.diff ? "inline-flex" : "none";
+    syncDiffExpanded();
   }
 
   /* ---------------- token 级 LCS diff（与 core/diff.mjs 同算法，页内自包含） ----------------
@@ -609,6 +717,9 @@
       diffCard.style.display = "none";
       return;
     }
+    // 重取主题：openDiff 到 renderDiff 之间宿主可能已经切了明暗，
+    // 不重取的话首帧会用旧配色，最迟 1.5s 后才被 themeTimer 纠正（肉眼可见的闪变）
+    applyTheme();
     diffCard.textContent = "";
     var d = state.diff;
 
@@ -622,7 +733,11 @@
     closeBtn.textContent = "✕";
     closeBtn.style.cssText =
       "border:0;background:transparent;color:inherit;cursor:pointer;font-size:13px;opacity:.6;padding:2px 4px;border-radius:5px";
-    closeBtn.addEventListener("click", closeDiff);
+    closeBtn.addEventListener("click", function () {
+      closeDiff(true);
+    });
+    // closeBtn 是局部变量，openDiff/closeDiff 里看不到它；存进 state 才能在关闭后还焦
+    state.lastCloseBtn = closeBtn;
     head.appendChild(title);
     head.appendChild(closeBtn);
 
@@ -688,9 +803,34 @@
 
   function openDiff() {
     renderDiff();
+    // 键盘/读屏用户：打开后焦点进卡片，否则 Esc 拦截与 Tab 顺序都是断的
+    try {
+      if (state.lastCloseBtn && typeof state.lastCloseBtn.focus === "function") {
+        state.lastCloseBtn.focus();
+      }
+    } catch (e) {}
+    syncDiffExpanded();
   }
-  function closeDiff() {
+  /**
+   * @param {boolean} [restoreFocus] 是否把焦点还给 ⇄。
+   *   只有用户主动关闭（点 ✕ / 再点 ⇄ / 卡内按 Esc）才还焦；
+   *   程序化关闭（撤销栈失效、撤销完成）不还 —— 那会把焦点从输入框抢走。
+   */
+  function closeDiff(restoreFocus) {
+    var wasOpen = diffCard.style.display !== "none";
     diffCard.style.display = "none";
+    if (wasOpen && restoreFocus) {
+      try {
+        if (diffBtn && typeof diffBtn.focus === "function") diffBtn.focus();
+      } catch (e) {}
+    }
+    syncDiffExpanded();
+  }
+  /** diffBtn 的展开态：读屏靠它知道"下面还有一块对比内容"。 */
+  function syncDiffExpanded() {
+    if (!diffCard || !diffBtn) return;
+    var open = diffCard.style.display !== "none";
+    diffBtn.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
   function positionDiff() {
@@ -755,19 +895,52 @@
     return norm(n ? n.innerText : "");
   }
 
+  /* 记录"当前草稿基准"，同时把廉价指纹一起对齐。
+   * 两处必须同步更新，否则下一轮 300ms 轮询会把"自己刚写进去的内容"
+   * 当成变化再深读一次（结果虽正确，但白白多跑一次全树遍历）。 */
+  function syncDraftBaseline(text) {
+    state.lastDraft = text;
+    state.lastCheapText = norm(composerEl ? composerEl.innerText : "");
+  }
+
   function checkDraftChange() {
     if (!composerEl) return;
+    /* 廉价指纹短路：12000 字草稿下 readDraftCanonical → toJSON + 递归整棵树
+     * 每次要 1-5ms，而 300ms 轮询在空闲时也在跑。
+     * innerText 只用来判"没变"（变了也不代表真变了，继续走权威路径），
+     * 绝不用于判等/写入校验 —— 段落间多换行的老坑见 readDraftCanonical 注释。
+     * 已知取舍：纯格式变更（加粗/斜体）不改 innerText，但本插件只消费纯文本，无影响。 */
+    var cheap = "";
+    try {
+      cheap = norm(composerEl.innerText);
+    } catch (e) {
+      cheap = "";
+    }
+    if (cheap === state.lastCheapText) return;
+    state.lastCheapText = cheap;
+
     var draft = readDraftCanonical(composerEl);
     if (draft === state.lastDraft) return;
     var top = state.stack[state.stack.length - 1];
     if (top) {
       // 我刚写入的（pendingRef）不算"用户改了"；否则整栈失效
       if (draft !== top.after && draft !== state.pendingRef) {
+        var hadStack = state.stack.length > 0;
         state.stack = [];
         state.diff = null;
         closeDiff();
+        // 整栈被清空必须告知：否则用户只会发现 ↺ 突然消失，不知道为什么
+        if (hadStack) showToast("撤销历史已清空", 2400);
       }
       if (draft === top.after) state.pendingRef = "";
+    }
+    /* error 态要随草稿修改复位：用户按提示改完草稿，按钮还红着是明确的可信度损伤。
+     * 只复位"与草稿内容相关"的三类错误 —— 鉴权/额度那类错误改草稿也不会好。 */
+    if (
+      state.phase === "error" &&
+      (state.errorCode === "draft-changed" || state.errorCode === "too-long" || state.errorCode === "empty")
+    ) {
+      setPhase("idle");
     }
     state.lastDraft = draft;
     renderButtons();
@@ -779,14 +952,17 @@
     var top = state.stack[state.stack.length - 1];
     var res = writeDraft(composerEl, top.before);
     if (!res.ok) {
-      showToast("恢复失败：" + (res.reason || "写入校验未通过"));
+      if (res.reason === "lexical-incompatible") showToast(errText("lexical-incompatible"));
+      else showToast("恢复失败：" + (res.reason || "写入校验未通过"));
       return;
     }
     state.stack.pop();
     state.pendingRef = res.wrote;
     state.diff = null;
-    state.lastDraft = readDraftCanonical(composerEl);
-    closeDiff();
+    syncDraftBaseline(readDraftCanonical(composerEl));
+    // 撤销可能是从 diff 卡里的「恢复原文」触发的：那张卡即将关闭，
+    // 焦点不能跟着它一起消失，还给 ⇄ 才是正确的落点。
+    closeDiff(true);
     renderButtons();
     showToast("已恢复原文");
   }
@@ -859,6 +1035,8 @@
               var len = String(evt.text || "").length;
               btn.textContent = "◌";
               btn.title = "正在增强… 已接收 " + len + " 字（点击取消）";
+              // title 只有鼠标 hover 才读得到；进度必须同步进 aria-label
+              btn.setAttribute("aria-label", "正在增强，已接收 " + len + " 字，点击取消");
             } else if (evt.type === "done") {
               final = evt;
             } else if (evt.type === "error") {
@@ -939,6 +1117,12 @@
       // 写入 + 回读校验
       var res = writeDraft(composerEl, result);
       if (!res.ok) {
+        // lexical-incompatible 是可诊断的独立错误码，不该被压成 internal
+        if (res.reason === "lexical-incompatible") {
+          setPhase("error", "lexical-incompatible");
+          showToast(errText("lexical-incompatible"));
+          return;
+        }
         setPhase("error", "internal", res.reason);
         showToast("写入草稿失败：" + (res.reason || "校验未通过"));
         return;
@@ -947,7 +1131,7 @@
       state.stack.push({ before: norm(source), after: norm(result) });
       if (state.stack.length > 8) state.stack = state.stack.slice(-8);
       state.pendingRef = norm(result);
-      state.lastDraft = norm(result);
+      syncDraftBaseline(norm(result));
 
       // diff
       state.diff = computeDiff(norm(source), norm(result));
@@ -993,11 +1177,13 @@
   function rediscover() {
     composerEl = null;
     cardEl = null;
+    // 换了 composer 节点：旧的廉价指纹已无意义，否则会拿旧文本误短路一次
+    state.lastCheapText = null;
     var found = findComposer();
     if (found) {
       composerEl = found;
       cardEl = cardOf(found);
-      state.lastDraft = readDraftCanonical(found);
+      syncDraftBaseline(readDraftCanonical(found));
     }
   }
 
@@ -1072,6 +1258,49 @@
     var BTN_W = 28;
     var GAP = 8;
 
+    /* ---- 落点重叠自检（纯矩形计算） ----
+     * 必须用 top+height / left+width 推导右下角，不能直接读 r.bottom / r.right：
+     * 测试 mock 的按钮矩形可能缺 bottom 字段，直接读会得到 undefined，
+     * 比较恒为 false —— 于是"看起来全绿"，实际照样压住原生按钮。 */
+    function rectRight(r) {
+      return typeof r.right === "number" ? r.right : r.left + (r.width || 28);
+    }
+    function rectBottom(r) {
+      return typeof r.bottom === "number" ? r.bottom : r.top + (r.height || 28);
+    }
+    function rectsOverlap(l, t, w, h, r) {
+      return l < rectRight(r) + 4 && l + w > r.left - 4 && t < rectBottom(r) + 4 && t + h > r.top - 4;
+    }
+    function fitsAnywhere(l, t, w, h, rects) {
+      for (var i = 0; i < rects.length; i++) {
+        if (rectsOverlap(l, t, w, h, rects[i])) return false;
+      }
+      return true;
+    }
+    /* 统一收尾：候选落点与任何原生按钮相交时，沿同一行左右步进找空隙；
+     * 找不到空隙宁可返回 hidden（按钮隐藏），也绝不压在原生 UI 上。 */
+    function settle(cand, via) {
+      var W = BTN_W;
+      var H = 28;
+      var rects = [];
+      for (var i = 0; i < row.length; i++) rects.push(row[i].r);
+      if (fitsAnywhere(cand.left, cand.top, W, H, rects)) {
+        return { left: cand.left, top: cand.top, via: via };
+      }
+      var step = 8;
+      for (var k = 1; k <= 24; k++) {
+        var tryLeft = cand.left - step * k;
+        if (tryLeft >= cr.left && fitsAnywhere(tryLeft, cand.top, W, H, rects)) {
+          return { left: tryLeft, top: cand.top, via: via + "-shift" };
+        }
+        var tryRight = cand.left + step * k;
+        if (tryRight + W <= cr.right && fitsAnywhere(tryRight, cand.top, W, H, rects)) {
+          return { left: tryRight, top: cand.top, via: via + "-shift" };
+        }
+      }
+      return { left: null, top: null, via: "hidden" };
+    }
+
     // 收集工具行按钮：下半部、尺寸像图标或小胶囊
     var row = [];
     var btns = card.querySelectorAll("button");
@@ -1107,16 +1336,17 @@
 
     // 首选：左侧簇末尾右侧
     if (leftClusterRight > -Infinity && leftClusterRight + GAP + BTN_W < cr.right) {
-      return { left: leftClusterRight + GAP, top: rowTop, via: "cluster" };
+      return settle({ left: leftClusterRight + GAP, top: rowTop }, "cluster");
     }
     // 退路：模型选择器左侧（仅当那里真的空得下）
     if (model && model.r.left - GAP - BTN_W > cr.left) {
-      return { left: model.r.left - GAP - BTN_W, top: model.r.top, via: "model" };
+      return settle({ left: model.r.left - GAP - BTN_W, top: model.r.top }, "model");
     }
-    return { left: cr.right - 40, top: cr.bottom - 34, via: "fallback" };
+    return settle({ left: cr.right - 40, top: cr.bottom - 34 }, "fallback");
   }
 
-  function place() {
+  /** @param {boolean} [force] 强制重算落点（忽略矩形签名缓存） */
+  function place(force) {
     if (!alive) return;
     try {
       if (!composerEl || !composerEl.isConnected) {
@@ -1124,7 +1354,7 @@
         if (found) {
           composerEl = found;
           cardEl = cardOf(found);
-          state.lastDraft = readDraftCanonical(found);
+          syncDraftBaseline(readDraftCanonical(found));
           renderButtons();
         }
       } else if (!cardEl || !cardEl.isConnected) {
@@ -1173,10 +1403,55 @@
       }
       hiddenSince = 0;
 
-      var a = anchorFor(cardEl);
+      /* 每帧开销收敛：卡片矩形没变时直接复用上一帧落点。
+       * 不做这层缓存的话，60fps 下每帧都要 querySelectorAll + 全量按钮
+       * getBoundingClientRect + elementFromPoint，而 lastPos 守卫恰恰证明
+       * 绝大多数帧的落点根本没变。
+       * force=true 时强制重算（400ms 兜底定时器用），防止"卡片矩形不变但
+       * 工具行按钮增减"这种变化被漏掉。 */
+      var csig = [r2(cr.left), r2(cr.top), r2(cr.width), r2(cr.height)].join(",");
+      var a;
+      if (
+        !force &&
+        csig === state.lastCardSig &&
+        state.lastAnchor &&
+        state.lastAnchor.via !== "hidden" &&
+        state.lastAnchor.left !== null
+      ) {
+        a = state.lastAnchor;
+      } else {
+        a = anchorFor(cardEl);
+        state.lastCardSig = csig;
+      }
+      if (a.left === null) {
+        // 找不到不压原生按钮的空隙：隐藏自己，绝不遮挡宿主 UI。
+        // 注意只退出这一帧的定位，不 return 掉更外层的状态维护。
+        if (wrap.style.display !== "none") wrap.style.display = "none";
+        state.hidden = true;
+        state.anchorDegraded = true;
+        state.lastAnchor = { left: null, top: null, via: a.via || "hidden" };
+        return;
+      }
       var left = a.left;
       var top = a.top;
       state.lastAnchor = { left: a.left, top: a.top, via: a.via || "cluster" };
+
+      /* 定位劣化显式化：非 cluster 路径（model / fallback / *-shift）意味着
+       * 工具行布局已经不是我们认识的样子，持续 5s 就提示一次。
+       * 以前 via 只存不报，用户只看到按钮位置不对，开发者只能翻源码猜。 */
+      var via = a.via || "cluster";
+      if (via !== "cluster") {
+        if (!state.anchorSince) state.anchorSince = Date.now();
+        if (!state.anchorWarned && Date.now() - state.anchorSince > 5000) {
+          state.anchorWarned = true;
+          showToast("按钮位置可能不准（界面布局已变化）", 3000);
+        }
+        state.anchorDegraded = true;
+      } else {
+        state.anchorSince = 0;
+        state.anchorDegraded = false;
+      }
+
       // 夹到视口内
       left = Math.max(4, Math.min(left, window.innerWidth - wrap.offsetWidth - 4));
       top = Math.max(4, Math.min(top, window.innerHeight - wrap.offsetHeight - 4));
@@ -1200,7 +1475,15 @@
       if (toast.style.display !== "none") positionToast();
     } catch (e) {
       // 逐帧循环绝不能因异常退出；但要留下可观测的痕迹，否则定位问题只能是黑盒
-      state.placeError = String((e && e.message) || e);
+      var msg = String((e && e.message) || e);
+      state.placeError = msg;
+      // 只报首次，避免 60fps 刷屏
+      if (!state.placeErrorLogged) {
+        state.placeErrorLogged = true;
+        try {
+          console.warn("[zpe] place error:", msg);
+        } catch (e2) {}
+      }
     }
   }
 
@@ -1249,7 +1532,7 @@
     e.preventDefault();
     e.stopPropagation();
     if (diffCard.style.display === "none") openDiff();
-    else closeDiff();
+    else closeDiff(true);
   });
 
   btn.addEventListener("mouseenter", function () {
@@ -1279,13 +1562,22 @@
     diffBtn.style.opacity = ".75";
   });
 
+  /* Esc 关闭 diff 卡：只在焦点位于卡片内时拦截。
+   * 用 capture + stopPropagation 会让宿主 App 自己的 Esc 处理（关面板 / 退出模式）
+   * 永远收不到事件 —— 我们的浮层没理由霸占这个键。 */
   document.addEventListener(
     "keydown",
     function (e) {
-      if (e.key === "Escape" && diffCard.style.display !== "none") {
-        closeDiff();
-        e.stopPropagation();
-      }
+      if (e.key !== "Escape") return;
+      if (diffCard.style.display === "none") return;
+      var active = document.activeElement;
+      var inside = false;
+      try {
+        inside = !!(active && (active === diffCard || diffCard.contains(active)));
+      } catch (e2) {}
+      if (!inside) return;
+      closeDiff(true);
+      // 不调用 stopPropagation：事件继续冒泡给宿主
     },
     true
   );
@@ -1338,6 +1630,8 @@
       diffVisible: diffCard.style.display !== "none",
       lastAnchor: state.lastAnchor || null,
       placeError: state.placeError || "",
+      anchorDegraded: !!state.anchorDegraded,
+      anchorVia: (state.lastAnchor && state.lastAnchor.via) || "",
       // 实时跟随相关：会话模型标签（读 DOM 得到）与上一次实际使用的路由
       sessionModelLabel: currentModelLabel(),
       usedRoute: usedRoute || null,
@@ -1382,18 +1676,19 @@
       if (!composerEl || !composerEl.isConnected) rediscover();
       else cardEl = cardOf(composerEl);
     }
-    place();
+    // 400ms 强制重算一次：卡片矩形不变但工具行按钮增减时，签名缓存会漏检
+    place(true);
   }, 400);
   // 窗口重新可见 / 获得焦点时，立刻校正一次（不等下一个 tick）
   try {
     document.addEventListener("visibilitychange", function () {
       if (!alive || document.visibilityState !== "visible") return;
       rediscover();
-      place();
+      place(true);
     });
     window.addEventListener("focus", function () {
       if (!alive) return;
-      place();
+      place(true);
     });
   } catch (e) {}
 })();

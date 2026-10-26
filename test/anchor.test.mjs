@@ -47,7 +47,9 @@ function makeCard(cardRect, buttons) {
   return {
     getBoundingClientRect: () => cardRect,
     querySelectorAll: (sel) =>
-      sel === "button"
+      // findModelButton 用的是复合选择器；两种选择器都要返回按钮，
+      // 否则 model 路径在测试里恒不可达（历史盲区）。
+      sel === "button" || sel === "button, [role='button']"
         ? buttons.map((b) => ({
             getBoundingClientRect: () => b.rect,
             getAttribute: (a) => (a === "aria-label" ? b.aria : a === "title" ? b.title || "" : null),
@@ -130,4 +132,150 @@ test("窄卡片下不出界", () => {
   const btn = [{ aria: "添加上下文", rect: { left: 110, top: 560, width: 28, height: 28, right: 138 } }];
   const pos = anchorFor(makeCard(narrow, btn));
   assert.ok(pos.left >= narrow.left && pos.left + 28 <= narrow.right + 1, JSON.stringify(pos));
+});
+
+/* ---------------- 落点重叠自检（v0.3.0 T01） ----------------
+ * 背景：fallback 落点 = 卡片右下角内缩 40/34，实测与发送按钮矩形直接相交。
+ * 工具行识别失败（UI 改版）时正是 fallback 生效之时 —— 也就是说
+ * "安全退路"会在最需要它的时候压住发送按钮。以下三条是该修复的锚点。 */
+
+test("真实布局下不与任何原生按钮重叠（含发送按钮）", () => {
+  const pos = anchorFor(makeCard(CARD, REAL_BUTTONS));
+  assert.ok(pos.left !== null, "正常布局不应隐藏");
+  const r = rectOf(pos);
+  for (const b of REAL_BUTTONS) assert.ok(!overlap(r, b.rect), `压住了「${b.aria}」`);
+});
+
+test("右侧簇占满时要么隐藏、要么不压任何按钮（含发送）", () => {
+  const rightCluster = REAL_BUTTONS.filter((b) => b.rect.left >= 900);
+  const pos = anchorFor(makeCard(CARD, rightCluster));
+  if (pos.left === null) {
+    assert.equal(pos.via, "hidden");
+    return;
+  }
+  const r = rectOf(pos);
+  for (const b of rightCluster) {
+    assert.ok(!overlap(r, b.rect), `压住了「${b.aria}」：${JSON.stringify({ r, orig: b.rect })}`);
+  }
+});
+
+test("全行被占满时返回 hidden 而不是压按钮", () => {
+  const full = [];
+  for (let x = CARD.left; x + 28 <= CARD.right; x += 30) {
+    full.push({ aria: "填充", rect: { left: x, top: 673, width: 28, height: 28, right: x + 28 } });
+  }
+  const pos = anchorFor(makeCard(CARD, full));
+  assert.equal(pos.left, null, "找不到空隙必须 hidden");
+  assert.equal(pos.via, "hidden");
+});
+
+/* ---------------- cardOf 容器合理性校验（v0.3.0 T02） ----------------
+ * 背景：cardOf 原先只要遇到"有边框/非透明背景"的祖先就当卡片。3.16.2 起
+ * 输入框内部出现了带背景的模型切换条，于是那个内层容器被当成卡片，
+ * 按钮 / diff 卡 / toast 三处锚点一起漂。以下用 mock DOM 覆盖该回归。 */
+
+const cardOf = new Function(
+  "document",
+  "getComputedStyle",
+  "n",
+  [
+    extractFn("isVisualBox", "n"),
+    extractFn("plausibleCard", "p, compRect"),
+    extractFn("cardOf", "n"),
+    "return cardOf(n);",
+  ].join("\n")
+);
+
+/** 每个用例自己换一个 getComputedStyle / document 实现。 */
+function cardOfWith(composer, gcs, body) {
+  return cardOf({ body: body || { isBody: true } }, gcs, composer);
+}
+
+/** 造一个带矩形、可查询按钮的假元素。 */
+function fakeEl(rect, { styled = false, buttons = [] } = {}) {
+  return {
+    rect,
+    styled,
+    parentElement: null,
+    getBoundingClientRect() {
+      return this.rect;
+    },
+    querySelectorAll(sel) {
+      if (sel !== "button") return [];
+      return this.buttons.map((b) => ({ getBoundingClientRect: () => b }));
+    },
+    buttons,
+  };
+}
+
+test("cardOf：内层带背景但不够宽时不误锚，返回到真正的卡片", () => {
+  const fakeDoc = { body: { isBody: true } };
+  const fakeGCS = (n) => ({
+    borderTopWidth: n.styled ? "1px" : "0px",
+    backgroundColor: n.styled ? "rgb(40,40,44)" : "rgba(0, 0, 0, 0)",
+  });
+
+  const composer = fakeEl({ left: 345, top: 621, width: 836, height: 40, right: 1181, bottom: 661 });
+  // 内层：3.16.2 起新增的"带背景模型切换条"，宽度只有 composer 的 60%
+  const inner = fakeEl({ left: 345, top: 618, width: 502, height: 46, right: 847, bottom: 664 }, {
+    styled: true,
+    buttons: [
+      { left: 350, top: 630, width: 28, height: 28, right: 378, bottom: 658 },
+      { left: 382, top: 630, width: 28, height: 28, right: 410, bottom: 658 },
+      { left: 414, top: 630, width: 28, height: 28, right: 442, bottom: 658 },
+    ],
+  });
+  // 外层：真正的卡片，宽度覆盖 composer 且下半部有工具行
+  const outer = fakeEl({ left: 333, top: 608, width: 861, height: 105, right: 1194, bottom: 713 }, {
+    styled: true,
+    buttons: [
+      { left: 345, top: 673, width: 28, height: 28, right: 373, bottom: 701 },
+      { left: 377, top: 673, width: 111, height: 28, right: 488, bottom: 701 },
+      { left: 932, top: 673, width: 218, height: 28, right: 1150, bottom: 701 },
+    ],
+  });
+
+  composer.parentElement = inner;
+  inner.parentElement = outer;
+  outer.parentElement = fakeDoc.body;
+
+  assert.equal(cardOfWith(composer, fakeGCS, fakeDoc.body), outer, "应跳过不够宽的内层容器");
+});
+
+test("cardOf：候选容器没有工具行（<2 颗按钮）时继续上溯", () => {
+  const fakeDoc = { body: { isBody: true } };
+  const fakeGCS = () => ({ borderTopWidth: "1px", backgroundColor: "rgb(40,40,44)" });
+
+  const composer = fakeEl({ left: 345, top: 621, width: 836, height: 40, right: 1181, bottom: 661 });
+  const wrapper = fakeEl({ left: 340, top: 610, width: 850, height: 60, right: 1190, bottom: 670 }, {
+    styled: true,
+    buttons: [{ left: 350, top: 630, width: 28, height: 28, right: 378, bottom: 658 }],
+  });
+  const outer = fakeEl({ left: 333, top: 608, width: 861, height: 105, right: 1194, bottom: 713 }, {
+    styled: true,
+    buttons: [
+      { left: 345, top: 673, width: 28, height: 28, right: 373, bottom: 701 },
+      { left: 932, top: 673, width: 218, height: 28, right: 1150, bottom: 701 },
+    ],
+  });
+
+  composer.parentElement = wrapper;
+  wrapper.parentElement = outer;
+  outer.parentElement = fakeDoc.body;
+
+  assert.equal(cardOfWith(composer, fakeGCS, fakeDoc.body), outer);
+});
+
+test("cardOf：无任何合格候选时兜底返回最外层祖先，绝不返回 null", () => {
+  const fakeDoc = { body: { isBody: true } };
+  const fakeGCS = () => ({ borderTopWidth: "0px", backgroundColor: "rgba(0, 0, 0, 0)" });
+
+  const composer = fakeEl({ left: 345, top: 621, width: 836, height: 40, right: 1181, bottom: 661 });
+  const plain = fakeEl({ left: 300, top: 600, width: 900, height: 120, right: 1200, bottom: 720 });
+  composer.parentElement = plain;
+  plain.parentElement = fakeDoc.body;
+
+  const got = cardOfWith(composer, fakeGCS, fakeDoc.body);
+  assert.ok(got, "绝不能返回 null：place() 会直接崩，按钮永久消失");
+  assert.equal(got, plain);
 });

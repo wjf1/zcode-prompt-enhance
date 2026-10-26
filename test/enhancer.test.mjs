@@ -117,6 +117,36 @@ test("调用方 abort → aborted，不计超时", async () => {
   );
 });
 
+/* ---------------- timeout 回落标记（v0.3.0 T07） ----------------
+ * 桥层的回落白名单原先包含 timeout，于是"超时后整包重发"会烧双份额度。
+ * 判据是 hadFirstChunk：一个 token 都没吐才值得重试。 */
+
+test("超时且无任何 text delta → hadFirstChunk === false（可安全回落）", async () => {
+  // stallAfter: 0 = 一个事件都没读出来就卡住
+  const res = sseResponse(textEvents(["a"]), { stallAfter: 0 });
+  await assert.rejects(
+    () => enhanceDraft({ route: ROUTE, draft: "x", fetchImpl: async () => res, timeoutMs: 800 }),
+    (e) => {
+      assert.equal(e.code, "timeout");
+      assert.equal(e.hadFirstChunk, false, "没有 delta 时必须标记为 false，否则不该回落");
+      return true;
+    }
+  );
+});
+
+test("先吐 delta 再超时 → hadFirstChunk === true（不得回落）", async () => {
+  // stallAfter: 2 = 已读 message_start + 一个 text_delta 后卡住
+  const res = sseResponse(textEvents(["第一段", "第二段"]), { stallAfter: 2 });
+  await assert.rejects(
+    () => enhanceDraft({ route: ROUTE, draft: "x", fetchImpl: async () => res, timeoutMs: 900 }),
+    (e) => {
+      assert.equal(e.code, "timeout");
+      assert.equal(e.hadFirstChunk, true, "已产生内容说明上游已计费，不能回落重发");
+      return true;
+    }
+  );
+});
+
 test("401 → auth", async () => {
   await assert.rejects(
     () => enhanceDraft({

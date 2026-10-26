@@ -11,6 +11,11 @@ const OVERLAY = path.join(process.cwd(), "overlay-prompt-enhance.js");
 const SRC = fs.readFileSync(OVERLAY, "utf8");
 
 /* ---------- 最小 DOM 模拟 ---------- */
+/** CSS 属性名 → DOM style 驼峰名（够覆盖 overlay 用到的那些）。 */
+function camel(prop) {
+  return String(prop).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+}
+
 class FakeNode {
   constructor(tag) {
     this.tagName = String(tag).toUpperCase();
@@ -18,7 +23,21 @@ class FakeNode {
     this.parentNode = null;
     this.style = new Proxy(
       {
-        cssText: "",
+        /** 真实 DOM 里 cssText 会展开成各属性；不展开的话 style.display 永远是空串，
+            任何 `style.display !== "none"` 的判断都会把"隐藏"当成"可见"（假绿）。 */
+        set cssText(v) {
+          this._css = String(v);
+          for (const decl of String(v).split(";")) {
+            const idx = decl.indexOf(":");
+            if (idx < 0) continue;
+            const k = decl.slice(0, idx).trim();
+            const val = decl.slice(idx + 1).trim();
+            if (k) this[camel(k)] = val;
+          }
+        },
+        get cssText() {
+          return this._css || "";
+        },
         setProperty(k, v) {
           this[k] = v;
         },
@@ -74,6 +93,32 @@ class FakeNode {
   }
   querySelectorAll() {
     return [];
+  }
+  /* positionDiff() 会按 #zpe-diff-body 取正文区。缺这个方法会让定位链路每帧抛错，
+     而错误只落进 state.placeError，模拟链路看起来"绿"其实 diff 卡从未被定位过。 */
+  querySelector(sel) {
+    const want = String(sel).startsWith("#") ? String(sel).slice(1) : "";
+    if (want) {
+      const walk = (n) => {
+        if (n.id === want) return n;
+        for (const c of n.children) {
+          const r = walk(c);
+          if (r) return r;
+        }
+        return null;
+      };
+      return walk(this);
+    }
+    const tag = String(sel).toUpperCase();
+    const walkTag = (n) => {
+      if (n.tagName === tag) return n;
+      for (const c of n.children) {
+        const r = walkTag(c);
+        if (r) return r;
+      }
+      return null;
+    };
+    return walkTag(this);
   }
   closest() {
     return null;
@@ -151,7 +196,9 @@ function buildSandbox(opts = {}) {
     { aria: "workbuddy代理/cn:deepseek-v4.1-flash 最高", rect: [932, 673, 218, 28] },
   ];
   cardEl.querySelectorAll = (sel) => {
-    if (sel !== "button") return [];
+    // 计数：用于断言"卡片矩形没变时不重复扫描工具行"（T08 每帧开销收敛）
+    cardEl.__qsCalls = (cardEl.__qsCalls || 0) + 1;
+    if (sel !== "button" && sel !== "button, [role='button']") return [];
     return btns.map((b) => {
       const n = new FakeNode("button");
       n.getBoundingClientRect = () => ({
@@ -166,6 +213,7 @@ function buildSandbox(opts = {}) {
       return n;
     });
   };
+  cardEl.__qsCalls = 0;
 
   composerEl = new FakeNode("div");
   composerEl.setAttribute("contenteditable", "true");
@@ -203,7 +251,14 @@ function buildSandbox(opts = {}) {
     innerHeight: 760,
     document,
     getSelection: () => ({ removeAllRanges() {}, addRange() {}, deleteFromDocument() {} }),
-    getComputedStyle: () => ({ backgroundColor: "rgb(20,20,22)", borderTopWidth: "1px", pointerEvents: "auto" }),
+    // colorScheme / matchMedia 供 isDark() 的兜底分支使用
+    getComputedStyle: () => ({
+      backgroundColor: opts.transparentBody ? "rgba(0, 0, 0, 0)" : "rgb(20,20,22)",
+      borderTopWidth: "1px",
+      pointerEvents: "auto",
+      colorScheme: opts.colorScheme || "normal",
+    }),
+    matchMedia: (q) => ({ matches: !!(opts.prefersLight && /light/.test(q)) }),
     requestAnimationFrame: () => 1,
     cancelAnimationFrame: () => {},
     executeJavaScript: () => Promise.resolve(),
@@ -270,7 +325,7 @@ check("初始无 diff", st1.hasDiff === false);
 check("version 来自 boot", st1.version === "0.1.0", st1.version);
 check("浮层已挂到 body", env.body.children.length >= 3, env.body.children.length);
 
-const byId = (id) => {
+function byIdIn(root, id) {
   const walk = (n) => {
     if (n.id === id) return n;
     for (const c of n.children) {
@@ -279,8 +334,9 @@ const byId = (id) => {
     }
     return null;
   };
-  return walk(env.body);
-};
+  return walk(root);
+}
+const byId = (id) => byIdIn(env.body, id);
 const btn = byId("zpe-btn");
 const undoBtn = byId("zpe-undo");
 const diffBtn = byId("zpe-diffbtn");
@@ -405,6 +461,108 @@ console.log("\n[9] rAF 停摆时靠 setInterval 兜底维持定位（真实故�
   await sleep(200);
   const st2 = env3.window.__zpeState();
   check("恢复可见后状态正常", st2 && st2.draftLen >= 0, st2 && st2.draftLen);
+}
+
+console.log("\n[10] 每帧开销收敛：卡片矩形不变时不重复扫描工具行（T08）");
+{
+  const env5 = buildSandbox();
+  const card5 = cardEl; // buildSandbox 会重置全局 cardEl 到新沙箱的卡片
+  await sleep(150); // 让首帧完成定位并写入矩形签名
+  check("浮层已挂载", env5.body.children.length >= 3);
+  check("首帧确实扫过一次工具行", card5.__qsCalls > 0, card5.__qsCalls);
+
+  const before = card5.__qsCalls;
+  let frames = 0;
+  const tick = () => {
+    frames += 1;
+    if (frames < 40) setTimeout(tick, 10);
+  };
+  tick();
+  // 这段时间内 rAF 会跑很多帧（每 16ms 一帧），但卡片矩形没变
+  await sleep(420);
+  const delta = card5.__qsCalls - before;
+  check("卡片矩形不变时不再逐帧扫描工具行", delta <= 4, { delta, frames });
+  console.log("    （期间约 " + frames + " 次计时，工具行扫描 " + delta + " 次；400ms 兜底强制重算会占 1-2 次）");
+
+  const w = (() => {
+    const walk = (n) => {
+      if (n.id === "zpe-btn-wrap") return n;
+      for (const ch of n.children) {
+        const r = walk(ch);
+        if (r) return r;
+      }
+      return null;
+    };
+    return walk(env5.body);
+  })();
+  check("缓存期间浮层仍在正确位置", !!w && w.style.display !== "none" && /px$/.test(w.style.left || ""), {
+    display: w && w.style.display,
+    left: w && w.style.left,
+  });
+  env5.window.__zpeTeardown();
+}
+
+console.log("\n[11] 体验与无障碍修复包（T11）");
+{
+  // 11.1 浅色主题：body/html 背景透明 + 系统偏好浅色 → 必须判定为浅色
+  const envL = buildSandbox({ transparentBody: true, prefersLight: true });
+  await sleep(60);
+  const toastL = (() => {
+    const walk = (n) => {
+      if (n.id === "zpe-toast") return n;
+      for (const ch of n.children) {
+        const r = walk(ch);
+        if (r) return r;
+      }
+      return null;
+    };
+    return walk(envL.body);
+  })();
+  // 11.3 toast 跟随主题（用 --zpe-bg 变量而不是硬编码暗色）
+  check("浅色主题下 toast 背景被设为浅色变量", /#ffffff/i.test(String(toastL && toastL.style["--zpe-bg"])), {
+    bg: toastL && toastL.style["--zpe-bg"],
+  });
+  check("toast 背景不再是硬编码暗色 rgba(30,30,32)", !/rgba\(30,30,32/.test(String(toastL && toastL.style.background)), {
+    background: toastL && toastL.style.background,
+  });
+
+  // 11.8 diffBtn 维护 aria-expanded（用干净沙箱，避免受前面用例的状态污染）
+  const envD = buildSandbox();
+  const diffBtnFresh = byIdIn(envD.body, "zpe-diffbtn");
+  check("diffBtn 初始 aria-expanded = false", diffBtnFresh.getAttribute("aria-expanded") === "false", diffBtnFresh.getAttribute("aria-expanded"));
+
+  lexCtl.setText("无障碍断言用草稿");
+  await sleep(400);
+  const bD = byIdIn(envD.body, "zpe-btn");
+  const diffBtnD = byIdIn(envD.body, "zpe-diffbtn");
+  const undoBtnD = byIdIn(envD.body, "zpe-undo");
+  bD.dispatch("click");
+  await sleep(250);
+  check("打开 diff 后 aria-expanded = true", diffBtnD.getAttribute("aria-expanded") === "true", diffBtnD.getAttribute("aria-expanded"));
+  check("首次增强后撤销栈只有 1 步（文案不提步数）", undoBtnD.title === "恢复原文", undoBtnD.title);
+
+  // 再跑一次增强，栈深度变 2 → 文案应带"还可 2 步"
+  const fetchOrig = envD.sandbox.fetch;
+  envD.sandbox.fetch = async () => ({
+    ok: true,
+    status: 200,
+    body: null,
+    text: async () => JSON.stringify({ type: "done", text: "第二版增强结果内容" }) + "\n",
+  });
+  bD.dispatch("click");
+  await sleep(250);
+  check("栈深度 2 时撤销提示带剩余步数", /还可\s*2\s*步/.test(undoBtnD.title), undoBtnD.title);
+  envD.sandbox.fetch = fetchOrig;
+
+  // 11.5 Esc 拦截：焦点不在卡片内时不得 stopPropagation
+  let stopped = false;
+  const handlers = envD.document._l.keydown || [];
+  for (const fn of handlers) {
+    fn({ key: "Escape", stopPropagation: () => (stopped = true) });
+  }
+  check("焦点不在 diff 卡内时 Esc 不被吞（未调用 stopPropagation）", stopped === false, { stopped });
+  envD.window.__zpeTeardown();
+  envL.window.__zpeTeardown();
 }
 
 console.log("\n" + (fail === 0 ? "ALL PASS" : fail + " FAILED"));

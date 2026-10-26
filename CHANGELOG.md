@@ -3,6 +3,150 @@
 本项目的所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.1] - 2026-10-26
+
+**修复 0.3.0 的注入回归：主窗口在 `web-contents-created` 时还没有 URL，被可信判定当场拒绝，按钮从未出现。**
+
+### 修复
+
+- `inject-main.cjs` 的 `web-contents-created` 与初始窗口遍历两处入口恢复按窗口类型
+  （`isMainWindow`）过滤。可信判定（URL 校验）保留在 `inject()` 内 —— 那时
+  `did-finish-load` 已触发、URL 已就绪。
+  - 症状：桥接服务正常监听（loader 已加载），浮层却从未进入任何窗口。
+  - 根因：创建事件触发时 `wc.getURL()` 返回空串，`trust.check("")` 恒为 false，
+    窗口在挂上注入钩子之前就被 return。
+  - 安全性不变：远程页面、webview 依旧被拒（`tools/inject-gate-selftest.mjs` 覆盖）。
+- 新增 `tools/inject-gate-selftest.mjs`：stub electron 完整模拟「窗口创建 → 加载完成 →
+  注入」时序。旧代码在该测试下恰好失败两条回归锚点（负对照已实测验证）。
+
+### 说明
+
+- asar 无需重打：注入行只负责 import 外部 loader；本次只改部署路径上的
+  loader / overlay 文件，重启主进程后生效（overlay 走 mtime 热更新，无需重启即可热注入）。
+
+## [0.3.0] - 2026-10-26
+
+**加固与适配版**：修掉「安全退路反而压住发送按钮」的定位炸弹，收窄桥令牌的注入面，
+把三类静默失败（定位劣化、配置格式变更、编辑器不兼容）变成可观测状态。
+无新增运行时依赖，118 → 140 项测试。
+
+### 修复
+
+- **✨ 落点会压住原生按钮（P0，真机可复现）**
+  - `anchorFor` 的 fallback 退路原为「卡片右下角内缩 40/34」。ZCode 3.16.3 的真实矩形下
+    它落在 `1154,679`，而发送按钮占 `1153-1181 × 673-701` —— 直接相交。
+    也就是说：工具行识别失败（UI 改版）时，本该"安全"的退路恰好压住发送。
+  - 现在三个候选落点统一过 `settle()`：与任何原生按钮矩形相交时，沿同一行左右步进
+    （8px 步长、最多各 24 步）找空隙；找不到空隙则返回 `hidden`，**宁可让按钮消失也不遮挡原生 UI**。
+  - 无按钮场景（`row.length === 0`）保持原行为，直接落右下角。
+  - 重叠判定统一用 `top+height` / `left+width` 推导右下角 —— 测试 mock 的矩形没有
+    `bottom` 字段，直接读会得到 `undefined`，比较恒为 false，形成"测试假通过"。
+
+- **卡片容器误判导致三处锚点漂移（P0）**
+  - `cardOf` 原先只要遇到"有边框或非透明背景"的祖先就当卡片。3.16.2 起输入框内部新增了
+    带背景的模型切换条，那个内层容器被当成卡片，按钮 / diff 卡 / toast 一起漂。
+  - 新增 `plausibleCard` 双重校验：① 宽度 ≥ composer 宽度的 90%；② 下半部真有工具行
+    （≥2 颗 16-44px 的可点按钮）。不满足则继续上溯。
+  - 兜底 `return last` 保留：任何情况下都不返回 `null`，否则 `place()` 直接崩、按钮永久消失。
+
+- **不可恢复的凭据错误被标成"可重试"（P0）**
+  - 桥层原先硬编码 `retryable = code !== "auth" && code !== "quota"`，但 core 的错误码表里
+    `invalid-credential` 是 `retryable: false`。结果是浮层给凭据错误显示"重试"按钮，
+    用户点了必然再失败并再烧一次请求额度。
+  - 改为查 `describeError(code).retryable`；core 未就绪时保守返回 false。
+
+- **超时回落导致双份计费（P1）**
+  - 回落白名单原先包含 `timeout`。超时时上游往往已产出并计费了大量 token，
+    整包重发 = 一次点击烧双份额度。
+  - `enhanceDraft` 现在记录 `hadFirstChunk`；桥层只在 `code === "timeout" && hadFirstChunk === false`
+    （一个 token 都没吐）时才回落。
+  - 注意标记补在 `EnhanceError` 分支而不只是 `AbortError` 分支：超时实际由 `nextOrAbort`
+    竞速抛出 `EnhanceError("timeout")`，只挂在后者会漏掉最常见的超时路径。
+
+- **浅色用户系统性看到暗色卡片（P2）**
+  - `isDark()` 原先把透明背景 `rgba(0,0,0,0)` 当成黑色。浅色主题下 body 常是 transparent，
+    于是稳定误判成暗色。
+  - 改为依次探测 `:root` → `body`，跳过 alpha=0 的候选；再兜底读 `color-scheme`；
+    最后跟随 `prefers-color-scheme`。toast 也改用同一套 `--zpe-bg` / `--zpe-fg` 变量。
+
+- **error 态不随草稿修改复位**：草稿被改后，`draft-changed` / `too-long` / `empty`
+  三类错误复位为 idle（改草稿能好的才复位，鉴权/额度类不复位）。
+
+- **Esc 吞掉宿主事件**：原实现用 capture + `stopPropagation`，宿主 App 自己的 Esc 处理
+  永远收不到。改为**仅当焦点在 diff 卡内**才拦截并关闭，且不再 `stopPropagation`。
+
+### 新增
+
+- **`core/trust.mjs`：窗口 URL 可信判定（P0 安全）**
+  - 背景：`isMainWindow` 只判 `wc.getType() === "window"`，不校验窗口加载的 URL；
+    而桥 token 是进程生命周期常量、永不过期。任一 window 型窗口若加载远程内容，
+    该页面即可读到 `window.__ZPE_BOOT__.token`，以用户 apiKey 代发请求燃烧额度。
+  - 默认只信任本地打包协议（`file:` / `app:` / `chrome-extension:` / `devtools:`），
+    远程页面必须显式写进 `config.json` 的 `allowed_window_hosts` 才注入。
+  - trust 模块尚未加载完成时，退回"只允许本地协议"的安全默认（不是放行全部）。
+  - 新增 `test/trust.test.mjs`（7 项）。
+
+- **桥侧 Host 校验（DNS rebinding 防护）**：在 token 校验之前校验 `Host` 头必须是
+  `127.0.0.1:<port>` 或 `localhost:<port>`。攻击者域名可解析到 127.0.0.1（来源 IP 也是本机），
+  但 Host 头会是其域名，这一层能挡住。
+
+- **`config.json` 新字段 `allowed_window_hosts`**（默认 `[]` = 只信任本地页面）。
+
+- **provider 配置版本探测与三态上报（P1）**
+  - 新增 `candidateConfigPaths()`（v2 → v3 → cli → v1）、`detectConfigShape()`
+    （`anthropic-v2` / `unknown` / `missing`）、`findConfig()`。
+  - `GET /health` 增加 `configPath` 与 `configShape`；无路由时的 503 detail 把
+    "文件不存在 / 格式不认 / 没有可用 provider"三态分开，不再统一一句"unsupported"。
+
+- **Lexical 版本不兼容探针（P1）**：写入失败或回读不一致时先跑最小 state 探针，
+  区分"编辑器版本不兼容"（新错误码 `lexical-incompatible`，中文文案"编辑器版本不兼容，请更新插件"）
+  与业务错误。
+
+- **定位降级显式化（P0 可观测性）**
+  - `place()` 检测到 `via !== "cluster"` 持续超过 5s 且未提示过 → `showToast("按钮位置可能不准（界面布局已变化）")`，会话内一次。
+  - `place()` 的 catch 首次触发时 `console.warn("[zpe] place error:", msg)`（原先只写 state，纯黑盒）。
+  - `__zpeState()` 新增 `anchorDegraded` / `anchorVia`；恢复到 cluster 路径时复位。
+
+- **diff 卡焦点管理**：打开后焦点进卡片关闭按钮，关闭后还焦到 ⇄；
+  `diffBtn` 维护 `aria-expanded`。busy 进度同步写入 `aria-label`（原先只有 `title`，读屏读不到）。
+- **撤销栈深度可见**：↺ 的 `title` / `aria-label` 动态为「恢复原文（还可 N 步）」；
+  整栈被清空时提示「撤销历史已清空」。
+
+### 性能
+
+- **`place()` 每帧开销收敛（P1）**：卡片矩形签名未变时直接复用上一帧落点，
+  不再每帧 `querySelectorAll` + 全量 `getBoundingClientRect`。
+  400ms 兜底定时器改为 `place(true)` 强制重算，防止"卡片矩形不变但工具行按钮增减"漏检。
+  实测：420ms 窗口内工具行扫描从约 26 次降到 2 次。
+- **草稿轮询短路（P1）**：`checkDraftChange` 先用 `innerText` 廉价指纹判断"没变"就返回，
+  避免每 300ms 做一次 `toJSON` + 整树递归。`innerText` 只用于短路，绝不用于判等/写入校验。
+  `rediscover` 与所有 `lastDraft` 赋值点统一走 `syncDraftBaseline`，同步更新指纹。
+
+### 测试
+
+- anchor 测试扩容到 15 项：新增「落点不与任何原生按钮相交（含发送）」
+  「右侧簇占满时要么隐藏要么不压按钮」「全行铺满时必须 hidden」三条回归锚点，
+  以及 3 项 `cardOf` 容器校验用例。
+  - 同时修掉一个测试盲区：mock 的 `querySelectorAll` 原先只认 `"button"`，
+    而 `findModelButton` 用的是 `"button, [role='button']"` —— **model 路径在测试中恒不可达**。
+- 新增 `test/trust.test.mjs`（7 项）、provider 形状探测 6 项、enhancer `hadFirstChunk` 2 项。
+- `tools/sim-overlay.mjs` 扩容：
+  - `FakeNode.style` 现在会像真实 DOM 一样把 `cssText` 展开成属性。
+    此前 `style.display` 恒为空串，所有 `display !== "none"` 判断都假绿
+    （diff 卡"可见"断言一直没真正生效）。
+  - 补 `querySelector` 实现：`positionDiff` 原每帧抛 `TypeError`，
+    错误被 `state.placeError` 静默吞掉，diff 卡定位从未被验证过。
+  - 新增 T08 缓存有效性、T11 主题/无障碍/Esc 冒泡断言。
+- 总计 **140 项**，`npm test` 全绿；`preflight` ALL PASS；`bridge-selftest` 全过（含真实模型调用）；
+  `sim-overlay` 全过。
+
+### 已知取舍
+
+- `allowed_window_hosts` 默认空。若某次 ZCode 改版把主窗口改为远程加载（当前实测是
+  `loadFile(.../renderer/index.html)`，即 `file:`），按钮会消失。此时把实际主机名填进该字段即可，
+  **不要**为了省事默认放行所有 http/https。
+- `checkDraftChange` 的 innerText 短路对纯格式变更（加粗/斜体）不敏感；本插件只消费纯文本，无影响。
+
 ## [0.2.0] - 2026-10-26
 
 **增强用的模型改为实时跟随当前会话选中的模型**，跟随失败自动回落到默认模型。

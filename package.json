@@ -1,6 +1,6 @@
 {
   "name": "zcode-prompt-enhance",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "private": true,
   "description": "ZCode Desktop 提示词增强：在聊天输入框旁加 ✨ 按钮，一键把草稿改写成结构化提示词（asar 注入实现）",
   "type": "module",

@@ -9,7 +9,7 @@ function pathToFileUrl(p) {
 }
 
 const here = process.cwd();
-const targets = ["core/provider.mjs", "core/enhancer.mjs", "core/gates.mjs"];
+const targets = ["core/provider.mjs", "core/enhancer.mjs", "core/gates.mjs", "core/trust.mjs"];
 
 let bad = 0;
 for (const t of targets) {

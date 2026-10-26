@@ -144,6 +144,10 @@ export async function enhanceDraft({
 
   let iterator = null;
   let exhausted = false;
+  /* 是否已经收到过文本增量。用于桥层判断"超时是否值得回落重试"：
+   * 一个 token 都没吐 → 上游大概率没计费，重试安全；
+   * 已经吐了内容才超时 → 上游早已产出并计费，再整发包 = 一次点击烧双份额度。 */
+  let sawDelta = false;
 
   try {
     const res = await fetchImpl(route.baseUrl + "/messages", {
@@ -210,6 +214,7 @@ export async function enhanceDraft({
             toolBlocks.push(evt.content_block);
           }
           if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+            sawDelta = true;
             chunks.push(evt.delta.text || "");
             if (onProgress) {
               try { onProgress(chunks.join("")); } catch {}
@@ -245,10 +250,19 @@ export async function enhanceDraft({
     if (cleaned === "") throw new EnhanceError("empty");
     return { text: cleaned, usage };
   } catch (err) {
-    if (err instanceof EnhanceError) throw err;
+    if (err instanceof EnhanceError) {
+      /* 超时通常是 nextOrAbort 竞速时抛出的 EnhanceError("timeout")（ac.abort 触发），
+         它在上面就已经是 EnhanceError 了，会走到这一支 —— 标记必须在这里补，
+         只挂在下面的 AbortError 分支会漏掉最常见的超时路径。 */
+      if (err.code === "timeout" || err.code === "aborted") err.hadFirstChunk = sawDelta;
+      throw err;
+    }
     // AbortController 触发的异常：区分超时/调用方取消
     if (err && (err.name === "AbortError" || ac.signal.aborted)) {
-      throw new EnhanceError(abortedByOuter ? "aborted" : "timeout");
+      const e = new EnhanceError(abortedByOuter ? "aborted" : "timeout");
+      // 供桥层决定是否值得回落：只有"一个 token 都没吐"才不心疼重发
+      e.hadFirstChunk = sawDelta;
+      throw e;
     }
     throw new EnhanceError("internal", String((err && err.message) || err));
   } finally {

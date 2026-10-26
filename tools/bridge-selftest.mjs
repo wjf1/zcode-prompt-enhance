@@ -6,7 +6,7 @@
 // 不必冒险改 asar。
 import http from "node:http";
 import crypto from "node:crypto";
-import { loadProviderConfig, resolveRoute } from "../core/provider.mjs";
+import { loadProviderConfig, resolveRoute, findConfig } from "../core/provider.mjs";
 import { enhanceDraft } from "../core/enhancer.mjs";
 import { createGates } from "../core/gates.mjs";
 
@@ -43,15 +43,29 @@ function readBody(req, limit) {
 }
 
 const MAX_INPUT = 12000;
-const cfg = loadProviderConfig();
+const found = findConfig();
+const cfg = found.parsed;
 const route = resolveRoute(cfg, { provider: "new-provider-2", model: "cn:deepseek-v4.1-flash" });
 
 const server = http.createServer(async (req, res) => {
+  /* 与 inject-main.cjs 同序：先 Host 校验（防 DNS rebinding），再 token 校验。
+     正常调用用的是 http://127.0.0.1:<port>，Host 头自然是 127.0.0.1:<port>。 */
+  const host = String(req.headers.host || "");
+  if (port && host !== "127.0.0.1:" + port && host !== "localhost:" + port) {
+    return json(res, 403, { code: "forbidden" });
+  }
   if (req.headers["x-zpe-token"] !== TOKEN) return json(res, 403, { code: "forbidden" });
   const url = new URL(req.url, "http://127.0.0.1");
 
   if (url.pathname === "/health") {
-    return json(res, 200, { ok: true, model: route?.model, provider: route?.providerName, maxInputChars: MAX_INPUT });
+    return json(res, 200, {
+      ok: true,
+      model: route?.model,
+      provider: route?.providerName,
+      maxInputChars: MAX_INPUT,
+      configPath: found.path,
+      configShape: found.shape,
+    });
   }
   if (url.pathname !== "/enhance" || req.method !== "POST") return json(res, 404, { code: "not-found" });
 
@@ -134,6 +148,9 @@ console.log("\n[1] health");
   check("200", r.status === 200, r);
   const j = JSON.parse(r.text);
   check("has model", !!j.model, j);
+  check("有 configPath 字段（三态诊断）", "configPath" in j, j.configPath);
+  check("有 configShape 字段（三态诊断）", ["anthropic-v2", "unknown", "missing"].includes(j.configShape), j.configShape);
+  console.log("  configPath:", j.configPath, "shape:", j.configShape);
 }
 
 console.log("\n[2] 无 token 被拒");
@@ -187,6 +204,35 @@ console.log("\n[7] 取消（客户端断开）");
   setTimeout(() => ac.abort(), 600);
   await p;
   console.log("  PASS 客户端已断开（上游应被 abort）");
+}
+
+console.log("\n[8] 非回环 Host 被拒（防 DNS rebinding）");
+{
+  /* 必须用 node:http 发原始请求：fetch（undici）把 Host 当作禁止修改的头，
+     传了也会被忽略，那样断言就成了"没设 Host 的普通请求"，测不到东西。 */
+  const raw = await new Promise((resolve) => {
+    const req = http.request(
+      { host: "127.0.0.1", port, path: "/health", method: "GET", headers: { host: "evil.example.com", "x-zpe-token": TOKEN } },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (d) => (body += d));
+        res.on("end", () => resolve({ status: res.statusCode, text: body }));
+      }
+    );
+    req.on("error", (e) => resolve({ status: 0, text: String(e.message) }));
+    req.end();
+  });
+  check("403 forbidden", raw.status === 403 && raw.text.includes("forbidden"), raw);
+}
+
+console.log("\n[9] localhost 形式的 Host 也放行");
+{
+  const r = await fetch(`http://localhost:${port}/health`, { headers: { "x-zpe-token": TOKEN } }).then(async (res) => ({
+    status: res.status,
+    text: await res.text(),
+  }));
+  check("200", r.status === 200, r);
 }
 
 server.close();
