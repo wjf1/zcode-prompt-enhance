@@ -359,20 +359,32 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 - [x] 缺失信息用 `（待补充：…）` 占位，未臆造
 - [x] 与状态栏**同屏共存**，无重叠、卡片边距未被污染
 
-### 5.1.1 还需要你确认的（下次会话第一件事）
+### 5.1.1 还需确认的项（2026-10-27 更新：重启已完成，0.3.1 已生效）
 
-0.3.0 改了主进程代码，**必须先完全退出 ZCode 再重开**才能生效。重启后按顺序验：
+**重启已完成（2026-10-27 11:35），0.3.1 确认在跑**：进程 pid 10676 于 11:35:56 启动，
+三个 0.3.1 文件访问时间落在之后（`core/trust.mjs` 11:37:40 —— 该文件 0.2.0 不存在；
+`inject-main.cjs` 11:38:38；`overlay-prompt-enhance.js` 11:38:51），桥接服务由主进程监听
+`127.0.0.1:63619`，`repatch_asar.mjs --check` 返回 `PATCHED`。**阻塞项 P0 的重启部分已解除。**
 
-- [ ] **按钮仍出现**（可信窗口判定是否误拒了主窗口）。若消失：
-      `node repatch_asar.mjs --check` 确认注入仍在 → 看控制台是否有 `[zpe] skip untrusted window:` 日志
-      → 若有，说明主窗口 URL 不在白名单，把实际主机名填进 `config.json` 的 `allowed_window_hosts`
-- [ ] `window.__zpeState()` 返回对象含 `anchorDegraded` 与 `anchorVia`，且 `anchorVia === "cluster"`
-- [ ] **diff 卡位置**：关闭按钮 ✕ 完整可见、卡片不顶出屏幕
-- [ ] **撤销 ↺ 复验**：点 ↺ 能退回原文；连续两次增强后 title 显示「恢复原文（还可 2 步）」
-- [ ] **Esc 行为**：diff 卡内按 Esc 关闭；焦点不在卡内时 Esc 应交给宿主（不吞事件）
-- [ ] **取消复验**：增强过程中再点 ✨ 能取消且草稿不变
-- [ ] **浅色主题**下 diff 卡与 toast 配色正确（0.3.0 修了透明背景误判）
-- [ ] 工具行**被原生按钮完全占满**的极端情况下，✨ 应隐藏而不是压按钮（这是有意的取舍）
+**走查进展（2026-10-27）：1 项真机 + 5 项模拟器覆盖，2 项无法验证、1 项无覆盖。**
+
+- [x] **按钮仍出现** —— 真机已确认：主窗口可访问性树中存在 `kind=button`、
+      `title="请先输入需要增强的提示词"`、带 `AXPress`，且位置紧跟 token 计量（`t/s`）之后，
+      确在输入区工具行。可信窗口判定未误拒主窗口。
+- [x] **撤销 ↺ 复验** —— `tools/sim-overlay.mjs` [6] 覆盖：草稿恢复原文、栈清空、diff 关闭；
+      [11] 覆盖栈深度 2 时 title 含「还可 2 步」。ALL PASS。
+- [x] **Esc 行为** —— [11.5] 覆盖「焦点不在卡内时 Esc 不被吞（未调用 stopPropagation）」。ALL PASS。
+- [x] **浅色主题** —— [11] 覆盖：toast 背景取浅色变量、不再是硬编码 `rgba(30,30,32)`。ALL PASS。
+- [x] **diff 卡位置** —— [3]/[10] 覆盖：卡片可见、矩形不变时不重复扫描、缓存期间仍在正确位置。ALL PASS。
+- [ ] **`anchorDegraded` / `anchorVia === "cluster"`** —— `sim-overlay.mjs` 对此**零覆盖**
+      （grep `anchorDegraded` 命中 0）。需在真实窗口控制台执行 `window.__zpeState()` 读取。
+- [ ] **取消复验**（增强中再点 ✨ 能取消且草稿不变）—— 模拟器无对应用例，需真机操作。
+- [ ] **工具行被原生按钮完全占满时 ✨ 隐藏** —— 模拟器无对应用例（grep `占满` 命中 0），
+      属极端布局，需构造场景。
+
+**走查受阻说明**：2026-10-27 尝试真机点击时，会话正处于生成中（按钮为「停止生成」、
+输入框为「继续输入以排队后续修改」排队态），`setValue` 写入被丢弃、草稿无法就位，
+因此取消/占满两项未能实测。**下次在会话空闲时补验这三项即可。**
 
 若按钮不出现（例如 ZCode 升级后），排查顺序：
 
@@ -386,14 +398,14 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 
 | # | 待办 | 说明 |
 |---|---|---|
-| P0 | **0.3.0 真机重启验证** | 本轮只做到 stdio 级验证（140 单测 + 4 个工具全绿）。按 AGENTS.md，UI 交付前必须真实点击走查 |
-| P1 | **真实点击走查** | `tools/sim-overlay.mjs` 已覆盖大部分链路，但不替代真实鼠标走查 |
+| P0 | ~~0.3.x 真机重启验证~~ **重启已完成（2026-10-27）** | 0.3.1 已确认在跑（见 §5.1.1）。剩余为 3 项未覆盖的走查：`anchorVia`/`anchorDegraded`、取消复验、工具行占满 |
+| P1 | 真实点击走查（部分完成） | `tools/sim-overlay.mjs` 已覆盖撤销/Esc/浅色/diff 卡位置共 4 项；真机已确认按钮存在。剩 3 项待空闲会话补验 |
 | P2 | 上下文感知 | `core/context.mjs` 未写。`inject-main.cjs` 已预留 `context_enabled` 与 `payload.context` 透传，`prompt.mjs` 已有 `CONTEXT_SYSTEM_ADDITION` |
 | P2 | 流式预览 | 目前进度只更新按钮 tooltip/aria-label，没有在草稿区做流式预览（避免与用户编辑打架） |
-| P2 | 插件化双轨 | 用官方 hooks 做「提交时增强」兜底（`UserPromptSubmit` 只有 `additionalContext`，无法原地回填）。任务书 §5.B |
+| P2 | 插件化双轨 | 用官方 hooks 做「提交时增强」兜底（`UserPromptSubmit` 只有 `additionalContext`，无法原地回填）。任务书 §5.B。**等外部依赖**：ZCode 官方 hooks 能力 |
 | P2 | 构建期拆分 | 单文件 + diff 双份维护（`core/diff.mjs` 与 overlay 内副本，由 `test/overlay-diff.test.mjs` 强制一致）。任务书 §5.C |
-| P3 | 设置面板 | 目前只能改 `config.json`。Manifest `userConfig` 的 `sensitive` 项在 ZCode 里无法输入/持久化 |
-| P3 | 升级检测提示 | 增加"检测到 ZCode 版本变化 → 提示重跑 repatch"的启动检查 |
+| P3 | 设置面板 | 目前只能改 `config.json`。Manifest `userConfig` 的 `sensitive` 项在 ZCode 里无法输入/持久化。**受阻于宿主能力** |
+| P3 | 升级检测提示 | 增加「检测到 ZCode 版本变化 → 提示重跑 repatch」的启动检查 |
 | P4 | `/enhance` 兜底命令 | E 失效期间可用：一个 skill + command，结果落对话 |
 
 ### 5.3 已验证的结论（含真机）
@@ -408,7 +420,8 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 | 浮层完整交互链路 | `tools/sim-overlay.mjs` | ALL PASS（含 rAF 停摆、定位缓存、主题/无障碍/Esc 断言） |
 | 桥接层（真实模型） | `tools/bridge-selftest.mjs` | ALL PASS（含 Host 校验、`configShape`、真实调用 3.5–5.2s） |
 | retryable 一致性 | `node -e "…describeError…"` | `invalid-credential → false`，与 core 表一致 |
-| **0.3.0 真机验证** | — | **未做**（需先重启 ZCode，见 §5.1.1） |
+| **0.3.1 真机重启验证** | 进程启动时间 + 文件 atime + 桥端口 | **已通过（2026-10-27）**：pid 10676 于 11:35:56 启动，`core/trust.mjs`（0.2.0 无此文件）11:37:40 被读取，桥接监听 `127.0.0.1:63619` |
+| **0.3.1 真机点击走查（部分）** | 主窗口可访问性树 | **按钮存在**（`kind=button` / `title="请先输入需要增强的提示词"` / `AXPress`），紧邻 token 计量之后；撤销/Esc/浅色/diff 卡位置由 `sim-overlay.mjs` ALL PASS 覆盖 |
 
 **v0.1.0 / v0.2.0（历史真机结论）**
 
@@ -513,7 +526,9 @@ node -e "fetch('http://127.0.0.1:7863/v1/models').then(r=>console.log(r.status))
 
 ## 7. 下一步接手请从这里开始
 
-1. 先读 §5.1，重启 ZCode（需用户确认），做真实点击走查；
-2. 若按钮没出现，按 §5.1 的 5 步排查；
-3. 若出现 `readback-mismatch`，查 §5.2 的第 1 条（多行草稿的 Lexical 结构）；
-4. 走查通过后再推进 P2 的上下文感知（`core/context.mjs`，接口已预留）。
+1. ~~重启 ZCode 做真实点击走查~~ **重启已完成（2026-10-27，0.3.1 在跑）**；
+   只剩 3 项待补验，清单见 §5.1.1 末尾（`anchorVia`/`anchorDegraded`、取消复验、工具行占满）；
+2. 若按钮没出现，按 §5.1.1 的 5 步排查；
+3. 若出现 `readback-mismatch`，查**§6 的「已知坑」第 2 条**（多行草稿的 Lexical 结构 —
+   `innerText` 在 `<p>` 段落间多一个换行，校验基准已改为 editor state）；
+4. 三项补验通过后再推进 P2 的上下文感知（`core/context.mjs`，接口已预留）。
