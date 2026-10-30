@@ -30,10 +30,10 @@
 
 ```
 实际运行位置：E:\ZCode\resources\app.asar（2026-10-29 21:04 随 3.17.1 升级被整份替换，374,627,566 字节）
-  __ZPE_PATCH__    ✅ true（本项目，本次注入）
-  __ZUSAGE_PATCH__ ❌ false（状态栏项目注入随 3.17.1 升级一并丢失，需该仓库自行重新注入）
-备份：E:\ZCode\resources\app.asar.bak-zpe-20261030152738（注入前干净副本；脚本保留最近 3 份轮转）
-注入行：;import("file:///F:/AI/Zcode/zcode-prompt-enhance/inject-main.cjs")（仅此 1 行，check-asar-loadable 如实报告）
+  __ZPE_PATCH__    ✅ true（本项目，2026-10-30 15:27 注入）
+  __ZUSAGE_PATCH__ ✅ true（状态栏项目，2026-10-30 同日随其后重新注入，~/.zcode/zcode-token-usage-statusbar）
+备份：E:\ZCode\resources\app.asar.bak-zpe-20261030152738（本项目注入前副本；含 .bak-20261030 等共 3 份轮转）
+注入行：2 行（本项目 + 状态栏），check-asar-loadable ALL PASS
 部署路径：F:\AI\Zcode\zcode-prompt-enhance = 开发路径（v0.3.2）
   —— npm test 140/140、tools/preflight ALL PASS、tools/check-asar-loadable ALL PASS（3.17.1 asar 可加载）
 
@@ -65,7 +65,8 @@ ZCode 于 2026-10-29 升级到 **3.17.1**，asar 被整份替换（374,627,566 �
 
 验证：npm test 140/140、preflight ALL PASS、check-asar-loadable ALL PASS。
 **运行时行为零变更**——纯工具链 / 文档修复，0.3.1 的注入逻辑原样重新部署。
-未竟：状态栏项目 `__ZUSAGE_PATCH__` 仍缺（不在本仓库范围）；3.17.1 真机走查待重启（见 §5.1.1）。
+追记：状态栏项目 `__ZUSAGE_PATCH__` 已于同日随后重新注入（见「当前注入状态」），两行 loader 齐；
+3.17.1 真机走查待重启（见 §5.1.1）。
 
 ⚠️ **注入的 loader 只在主进程启动时加载。当前 ZCode 进程仍在跑注入前的代码——
 需要完全退出 ZCode（托盘 → Quit）再重新打开。**
