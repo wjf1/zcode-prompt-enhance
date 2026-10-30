@@ -193,7 +193,7 @@ node repatch_asar.mjs            # re-inject (quit ZCode first)
 Check whether ZCode has shipped its own enhancement feature (in which case this project is obsolete):
 
 ```bash
-node -e "const b=require('fs').readFileSync('F:/software/Zcode/resources/app.asar');const s=b.toString('latin1');console.log('enhancePrompt call sites:', s.split('enhancePrompt').length-1)"
+node -e "const b=require('fs').readFileSync('E:/ZCode/resources/app.asar');const s=b.toString('latin1');console.log('enhancePrompt call sites:', s.split('enhancePrompt').length-1)"
 ```
 
 ### Development

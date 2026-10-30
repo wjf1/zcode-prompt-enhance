@@ -3,6 +3,28 @@
 本项目的所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] - 2026-10-30
+
+**ZCode 3.17.1 重新部署 + 工具链路径修复。运行时行为零变更，0.3.1 的注入逻辑原样重新部署。**
+
+### 修复
+
+- `tools/check-asar-loadable.mjs` 硬编码旧安装路径 `F:/software/Zcode`（ZCode 迁至
+  `E:\ZCode` 后该工具必挂）：改为与 `repatch_asar.mjs` 相同的候选探测
+  （`--asar` 参数 / `ZPE_ASAR` 环境变量 / `LOCALAPPDATA` / `E:/ZCode`）。
+- 同工具对「恰好 2 行 loader」的硬性断言放宽为「至少 1 行」：状态栏项目
+  （`__ZUSAGE_PATCH__`）注入随 ZCode 升级丢失时只有 1 行是真实状态，
+  如实报告而非误报本项目失败（2 行 = 状态栏项目也在）。
+- `repatch_asar.mjs` / `uninstall.mjs`：删除 `F:/software/Zcode` 死候选路径。
+- `test/trust.test.mjs` 样本 URL 与 README（中英）、HANDOFF 查证命令示例中的
+  旧路径同步更新为 `E:/ZCode`。
+
+### 部署
+
+- ZCode 于 2026-10-29 升级 3.17.1，asar 整份替换导致注入丢失；2026-10-30 已重新注入
+  并核验（`PATCHED`、`check-asar-loadable` ALL PASS）。注入行仅本项目 1 行，
+  状态栏项目需在其仓库自行重新注入。
+
 ## [0.3.1] - 2026-10-26
 
 **修复 0.3.0 的注入回归：主窗口在 `web-contents-created` 时还没有 URL，被可信判定当场拒绝，按钮从未出现。**

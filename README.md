@@ -185,7 +185,7 @@ node repatch_asar.mjs            # 重新注入（需先完全退出 ZCode）
 也可先确认官方是否已经内置了增强功能（一旦有，本项目即可弃用）：
 
 ```bash
-node -e "const b=require('fs').readFileSync('F:/software/Zcode/resources/app.asar');const s=b.toString('latin1');console.log('enhancePrompt 调用点:', s.split('enhancePrompt').length-1)"
+node -e "const b=require('fs').readFileSync('E:/ZCode/resources/app.asar');const s=b.toString('latin1');console.log('enhancePrompt 调用点:', s.split('enhancePrompt').length-1)"
 ```
 
 ### 开发

@@ -12,7 +12,7 @@ import { createTrustChecker, DEFAULT_PROTOCOLS } from "../core/trust.mjs";
 
 test("默认信任本地打包资源协议", () => {
   const t = createTrustChecker();
-  assert.equal(t.check("file:///F:/software/Zcode/resources/app.asar/out/renderer/index.html"), true);
+  assert.equal(t.check("file:///E:/ZCode/resources/app.asar/out/renderer/index.html"), true);
   assert.equal(t.check("app://zcode/index.html"), true);
   assert.equal(t.check("chrome-extension://abc/page.html"), true);
   assert.equal(t.check("devtools://devtools/bundled/inspector.html"), true);

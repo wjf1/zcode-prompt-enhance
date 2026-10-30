@@ -40,7 +40,6 @@ function detectAsar() {
     process.platform === "win32"
       ? path.join(process.env.LOCALAPPDATA || "", "Programs", "ZCode", "resources", "app.asar")
       : null,
-    process.platform === "win32" ? "F:/software/Zcode/resources/app.asar" : null,
     process.platform === "win32" ? "E:/ZCode/resources/app.asar" : null,
     process.platform === "darwin" ? "/Applications/ZCode.app/Contents/Resources/app.asar" : null,
     process.platform === "linux" ? "/opt/ZCode/resources/app.asar" : null,

@@ -6,7 +6,22 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-const ASAR = "F:/software/Zcode/resources/app.asar";
+// 与 repatch_asar.mjs 的 detectAsar 相同的候选顺序（去掉 config / F:/software 旧候选）
+const argIdx = process.argv.indexOf("--asar");
+const explicit = argIdx > -1 ? process.argv[argIdx + 1] : process.env.ZPE_ASAR;
+const cands = [
+  explicit || null,
+  process.platform === "win32"
+    ? path.join(process.env.LOCALAPPDATA || "", "Programs", "ZCode", "resources", "app.asar")
+    : null,
+  process.platform === "win32" ? "E:/ZCode/resources/app.asar" : null,
+].filter(Boolean);
+const ASAR = cands.find((c) => fs.existsSync(c));
+if (!ASAR) {
+  console.error("app.asar not found; pass it explicitly:\n  node tools/check-asar-loadable.mjs --asar <path>\nsearched:\n" + cands.map((c) => "  " + c).join("\n"));
+  process.exit(1);
+}
+console.log("target:", ASAR);
 const CLI = path.join(process.cwd(), ".asar-tools", "node_modules", "@electron", "asar", "bin", "asar.mjs");
 const work = fs.mkdtempSync(path.join(process.env.TEMP || ".", "zpe-loadcheck-"));
 
@@ -50,7 +65,8 @@ try {
   console.log("\n[3] 注入的两行 loader 语法独立可解析");
   const loaders = src.split("\n").filter((l) => /^;import\("file:\/\/\//.test(l.trim()) || /^\s*;import\("file:\/\/\//.test(l));
   console.log("  找到 loader 行数:", loaders.length);
-  check("恰好 2 行 loader（本项目 + 状态栏）", loaders.length === 2, loaders.length);
+  // 2 行 = 本项目 + 状态栏项目均在；状态栏注入随 ZCode 升级丢失时只有 1 行（如实报告，不算本项目失败）
+  check("至少 1 行 loader（2 行 = 状态栏项目也在）", loaders.length >= 1, loaders.length);
   for (const l of loaders) {
     const m = l.match(/;\s*import\((.*)\)\.catch/);
     check("loader 语法形如 import(...).catch(...)", !!m, l.slice(0, 80));

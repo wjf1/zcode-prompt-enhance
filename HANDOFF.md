@@ -1,8 +1,8 @@
 # HANDOFF.md — 接力开发文档
 
 > 项目：zcode-prompt-enhance（ZCode 提示词增强）
-> 当前阶段：**v0.3.0 加固与适配完成，待真机重启验证**
-> 最后更新：2026-10-26
+> 当前阶段：**v0.3.2 已随 ZCode 3.17.1 重新注入，待重启验证**
+> 最后更新：2026-10-30
 
 ---
 
@@ -11,11 +11,11 @@
 | 项 | 值 |
 |---|---|
 | 项目定位 | ZCode Desktop 输入框旁 ✨ 一键增强提示词，原地回填 + 撤销 + diff |
-| 版本 | `0.3.1` |
-| 位置 | 开发副本 `F:\AI\workbuddy\workspace\2026-10-26-20-56-44\repo-analysis`；部署路径 `F:\AI\Zcode\zcode-prompt-enhance`（注入行指向后者，需先同步） |
+| 版本 | `0.3.2` |
+| 位置 | 开发与部署统一在 `F:\AI\Zcode\zcode-prompt-enhance`（注入行指向此处） |
 | 仓库 | https://github.com/wjf1/zcode-prompt-enhance |
-| 目标宿主 | ZCode Desktop **3.16.3**，实际装于 `E:\ZCode`（`F:\software\Zcode` 已不存在） |
-| 当前状态 | **v0.3.1 已同步部署路径，asar 已注入（23:16）；0.3.0 首次重启暴露注入回归并已修复，待再次重启验证** |
+| 目标宿主 | ZCode Desktop **3.17.1**（2026-10-29 升级），实际装于 `E:\ZCode`（`F:\software\Zcode` 已不存在） |
+| 当前状态 | **ZCode 升级 3.17.1 导致注入丢失，2026-10-30 15:27 已重新注入（PATCHED 核验通过），待完全退出 ZCode 重启生效** |
 
 ### 0.3.0 相对 0.2.0 的一句话差异
 
@@ -26,30 +26,46 @@
 
 ### 当前注入状态
 
-**✅ 2026-10-26 23:16 已重新注入，等待重启生效。**
+**✅ 2026-10-30 15:27 已随 ZCode 3.17.1 重新注入，等待重启生效。**
 
 ```
-实际运行位置：E:\ZCode\resources\app.asar
-  注入前 307,045,789 字节 → 注入后 307,046,002 字节（+213 = 注入行长度）
+实际运行位置：E:\ZCode\resources\app.asar（2026-10-29 21:04 随 3.17.1 升级被整份替换，374,627,566 字节）
   __ZPE_PATCH__    ✅ true（本项目，本次注入）
-  __ZUSAGE_PATCH__ ✅ true（状态栏项目，原样保留）
-备份：E:\ZCode\resources\app.asar.bak-zpe-20261026151638（注入前干净副本；脚本保留最近 3 份轮转）
-注入行：;import("file:///F:/AI/Zcode/zcode-prompt-enhance/inject-main.cjs")
-部署路径：F:\AI\Zcode\zcode-prompt-enhance
-  —— v0.3.0 全量代码 + .git，与开发副本逐文件一致；
-     npm test 140/140、tools/preflight ALL PASS 已在部署路径复跑确认
-开发副本：F:\AI\workbuddy\workspace\2026-10-26-20-56-44\repo-analysis
-  —— 注入行不再指向它；后续开发与推送建议直接在部署路径做
+  __ZUSAGE_PATCH__ ❌ false（状态栏项目注入随 3.17.1 升级一并丢失，需该仓库自行重新注入）
+备份：E:\ZCode\resources\app.asar.bak-zpe-20261030152738（注入前干净副本；脚本保留最近 3 份轮转）
+注入行：;import("file:///F:/AI/Zcode/zcode-prompt-enhance/inject-main.cjs")（仅此 1 行，check-asar-loadable 如实报告）
+部署路径：F:\AI\Zcode\zcode-prompt-enhance = 开发路径（v0.3.2）
+  —— npm test 140/140、tools/preflight ALL PASS、tools/check-asar-loadable ALL PASS（3.17.1 asar 可加载）
 
-历史：ZCode 曾重装/迁移到 E:\ZCode，asar 被整份替换导致本项目注入丢失
-（F:\software\Zcode 已不存在；状态栏项目迁移后重新注入过，本项目当时没有）。
-2026-10-26 已重新同步代码并注入。
+历史：ZCode 每次升级都会整份替换 asar 导致注入丢失（已两次：迁移到 E:\ZCode、
+2026-10-29 升级 3.17.1）。2026-10-30 已重新注入，注入方式沿用运行中直接替换
++ 用户方便时重启的路径（10-26 实测安全）。
 ```
 
 0.3.1 追记：首次重启（23:21）后桥活着但按钮未出现 → 定位到 0.3.0 注入门回归
 （web-contents-created 时空 URL 被拒，见 CHANGELOG 0.3.1）。已在部署路径就地修复 loader
 与 overlay（**asar 无需重打**）：overlay 改 mtime 会被运行中的会话热注入，loader 修复需再次重启生效。
 验证链：`tools/inject-gate-selftest.mjs` 在旧代码上 4 FAIL（负对照），修复后 ALL PASS。
+
+### 4.0.2 v0.3.2：ZCode 3.17.1 重新部署 + 工具链路径修复
+
+ZCode 于 2026-10-29 升级到 **3.17.1**，asar 被整份替换（374,627,566 字节），本项目与
+状态栏项目的注入同时丢失。本次会话完成：
+
+1. **重新注入**（2026-10-30 15:27，运行中直接替换 + 备份 `app.asar.bak-zpe-20261030152738`），
+   `repatch --check` = PATCHED，`check-asar-loadable` 对 3.17.1 的 asar ALL PASS；
+2. **修复硬编码旧安装路径 `F:/software/Zcode`**（ZCode 迁到 E:\ZCode 后遗留）：
+   - `tools/check-asar-loadable.mjs`（真 bug：单一路径必挂）改为与 repatch 相同的候选探测，
+     支持 `--asar` / `ZPE_ASAR`；`loaders.length === 2` 的硬性断言放宽为 `>= 1`
+     （2 行 = 状态栏项目也在；状态栏丢失时如实报告而非误报本项目失败）；
+   - `repatch_asar.mjs` / `uninstall.mjs`：删除 `F:/software` 死候选（无害但易误导）；
+   - `test/trust.test.mjs` 样本 URL、README×2 / HANDOFF 查证命令示例同步更新到 `E:/ZCode`；
+3. **GitHub 侧同步**：远程 main 曾领先本地 2 个文档提交（LICENSE + HANDOFF 回填），
+   已 ff-only 拉齐；本版随 0.3.2 tag 推送并发布 Release。
+
+验证：npm test 140/140、preflight ALL PASS、check-asar-loadable ALL PASS。
+**运行时行为零变更**——纯工具链 / 文档修复，0.3.1 的注入逻辑原样重新部署。
+未竟：状态栏项目 `__ZUSAGE_PATCH__` 仍缺（不在本仓库范围）；3.17.1 真机走查待重启（见 §5.1.1）。
 
 ⚠️ **注入的 loader 只在主进程启动时加载。当前 ZCode 进程仍在跑注入前的代码——
 需要完全退出 ZCode（托盘 → Quit）再重新打开。**
@@ -515,9 +531,9 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 # 注入状态
 node repatch_asar.mjs --check
 # asar 内两个 marker
-node -e "const b=require('fs').readFileSync('F:/software/Zcode/resources/app.asar');console.log('ZPE',b.includes(Buffer.from('__ZPE_PATCH__')),'ZUSAGE',b.includes(Buffer.from('__ZUSAGE_PATCH__')))"
+node -e "const b=require('fs').readFileSync('E:/ZCode/resources/app.asar');console.log('ZPE',b.includes(Buffer.from('__ZPE_PATCH__')),'ZUSAGE',b.includes(Buffer.from('__ZUSAGE_PATCH__')))"
 # 官方是否已接线增强功能（>0 = 本项目该退役了）
-node -e "const s=require('fs').readFileSync('F:/software/Zcode/resources/app.asar').toString('latin1');console.log(s.split('enhancePrompt').length-1)"
+node -e "const s=require('fs').readFileSync('E:/ZCode/resources/app.asar').toString('latin1');console.log(s.split('enhancePrompt').length-1)"
 # 本地模型代理存活
 node -e "fetch('http://127.0.0.1:7863/v1/models').then(r=>console.log(r.status)).catch(e=>console.log('down',e.message))"
 ```
