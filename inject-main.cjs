@@ -66,12 +66,13 @@ let coreMod = null;
 function loadCore() {
   if (!corePromise) {
     corePromise = (async () => {
-      const [provider, enhancer, gates] = await Promise.all([
+      const [provider, enhancer, gates, context] = await Promise.all([
         import(pathToFileUrl(path.join(HERE, "core", "provider.mjs"))),
         import(pathToFileUrl(path.join(HERE, "core", "enhancer.mjs"))),
         import(pathToFileUrl(path.join(HERE, "core", "gates.mjs"))),
+        import(pathToFileUrl(path.join(HERE, "core", "context.mjs"))),
       ]);
-      coreMod = { provider, enhancer, gates };
+      coreMod = { provider, enhancer, gates, context };
       return coreMod;
     })().catch((e) => {
       corePromise = null;
@@ -261,6 +262,17 @@ function startBridge() {
     if (!route) return json(res, 503, { code: "unsupported", detail: reason });
     LOG("enhance route:", source, "→", route.providerName + "/" + route.model);
 
+    /* 上下文感知（P2）：总开关 context_enabled 默认关闭 —— 关闭时完全不装配，
+     * 与无上下文基线逐字节一致。开启时把渲染端上报的原始上下文交给 core/context.mjs
+     * 做预算装配（从新到旧、条数/字符双上限），不再透传原始值。 */
+    const { context: contextMod } = await loadCore();
+    const context = c.context_enabled
+      ? contextMod.assembleContext(payload?.context, {
+          maxMessages: c.context_max_messages,
+          maxChars: c.context_max_chars,
+        })
+      : undefined;
+
     const release = gates.acquire();
     const callerAbort = new AbortController();
     let callerAborted = false;
@@ -286,7 +298,7 @@ function startBridge() {
         enhancer.enhanceDraft({
           route: rt,
           draft,
-          context: c.context_enabled ? payload?.context : undefined,
+          context,
           signal: callerAbort.signal,
           timeoutMs: c.timeout_ms,
           onProgress: (text) => {
@@ -515,6 +527,8 @@ function mainFileStamp() {
     path.join(HERE, "core", "enhancer.mjs"),
     path.join(HERE, "core", "diff.mjs"),
     path.join(HERE, "core", "gates.mjs"),
+    path.join(HERE, "core", "context.mjs"),
+    path.join(HERE, "core", "versioncheck.mjs"),
   ];
   for (const f of files) {
     try {
