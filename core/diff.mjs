@@ -114,3 +114,10 @@ export function formatStats(stats) {
   const sign = stats.delta >= 0 ? "+" : "-";
   return `${stats.changed} 处改动 · ${stats.added} 字新增 / ${stats.removed} 字替换 · 净 ${sign}${Math.abs(stats.delta)} 字`;
 }
+
+/** 一次算全：段序列 + 统计 + 行切分 + 文案。overlay 的 diff 块由本文件生成（tools/build-overlay.mjs）。 */
+export function computeDiff(before, after) {
+  const segs = diffSegments(before, after);
+  const stats = diffStats(segs);
+  return { segs, stats, lines: segmentsToLines(segs), statsText: formatStats(stats) };
+}

@@ -1,15 +1,16 @@
 /**
  * 校验 overlay 内嵌的 diff 实现与 core/diff.mjs 行为一致。
  *
- * 为什么需要这份测试：渲染进程没有 nodeIntegration，diff 算法在 overlay 里
- * 有一份自包含副本。两份实现漂移会导致「卡片上显示 A，实际写入 B」，
- * 这里用同一组用例双向比对，任何一边改动都会红。
+ * 0.3.3 起 overlay 的 diff 块由 tools/build-overlay.mjs 从 core/diff.mjs 构建期生成
+ * （单一事实来源），本测试降级为产物校验：双向行为比对 + build-overlay --check，
+ * 任何人手改生成块或改 core 忘跑构建，这里都会红。
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { diffSegments, diffStats, segmentsToLines, formatStats, tokenize as zpeTokenizeCore } from "../core/diff.mjs";
 
@@ -47,9 +48,9 @@ function loadOverlayDiff() {  const names = [
     assert.ok(end > 0, `函数 ${name} 的大括号不闭合`);
     chunks.push(OVERLAY_SRC.slice(m.index, end));
   }
-  // 常量也要一起带进去
-  const consts = OVERLAY_SRC.match(/var DIFF_TOKEN_CAP = \d+;/)?.[0];
-  const reConst = OVERLAY_SRC.match(/var TOKEN_RE = .*;/)?.[0];
+  // 常量也要一起带进去（构建期生成的块用 const，历史手写副本是 var）
+  const consts = OVERLAY_SRC.match(/(?:var|const|let) DIFF_TOKEN_CAP = \d+;/)?.[0];
+  const reConst = OVERLAY_SRC.match(/(?:var|const|let) TOKEN_RE = .*?;/)?.[0];
   assert.ok(consts, "找不到 DIFF_TOKEN_CAP");
   assert.ok(reConst, "找不到 TOKEN_RE");
 
@@ -142,4 +143,14 @@ test("超长输入退化为整段替换（两边一致）", () => {
   const mine = plain(O.zpeDiffSegments(long, "短").map((s) => s.type));
   const ref = plain(diffSegments(long, "短").map((s) => s.type));
   assert.deepEqual(mine, ref);
+});
+
+test("产物校验：overlay diff 块与 core/diff.mjs 构建期同步（build-overlay --check）", () => {
+  assert.ok(OVERLAY_SRC.includes("/* [ZPE:DIFF:BEGIN]"), "缺 BEGIN 标记");
+  assert.ok(OVERLAY_SRC.includes("/* [ZPE:DIFF:END] */"), "缺 END 标记");
+  const r = spawnSync(process.execPath, [path.join(HERE, "..", "tools", "build-overlay.mjs"), "--check"], {
+    encoding: "utf8",
+    timeout: 20000,
+  });
+  assert.equal(r.status, 0, `build-overlay --check 应通过（产物过期或脚本异常）：\n${r.stdout}${r.stderr}`);
 });

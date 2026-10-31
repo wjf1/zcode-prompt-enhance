@@ -593,35 +593,41 @@
     syncDiffExpanded();
   }
 
-  /* ---------------- token 级 LCS diff（与 core/diff.mjs 同算法，页内自包含） ----------------
-     为什么在页内重写一份而不是 import：渲染进程没有 nodeIntegration，拿不到文件系统；
-     主进程 executeJavaScript 注入的是单个字符串。算法必须保持与 core/diff.mjs 一致
-     （test/diff.test.mjs 与 test/overlay-diff.test.mjs 会用同一组用例双向校验）。 */
-  var DIFF_TOKEN_CAP = 800;
-  var TOKEN_RE = /\s+|[\u3400-\u9fff]|[A-Za-z0-9_]+|[^\s]/g;
+  /* [ZPE:DIFF:BEGIN]
+  本块由 tools/build-overlay.mjs 从 core/diff.mjs 自动生成 —— 手改会被覆盖。
+  单一事实来源是 core/diff.mjs：改算法请改那里，然后运行 node tools/build-overlay.mjs
+  （--check 仅校验产物是否最新）。test/overlay-diff.test.mjs 继续做行为级产物校验。
+  */
+  const DIFF_TOKEN_CAP = 800;
+
+  const TOKEN_RE = /\s+|[\u3400-\u9fff]|[A-Za-z0-9_]+|[^\s]/g;
 
   function zpeTokenize(text) {
-    return String(text == null ? "" : text).match(TOKEN_RE) || [];
+    return String(text ?? "").match(TOKEN_RE) || [];
   }
 
+  /**
+   * 计算 diff 段序列。
+   * @returns {{type:'same'|'del'|'ins', text:string}[]}
+   */
   function zpeDiffSegments(before, after) {
-    var a = zpeTokenize(before);
-    var b = zpeTokenize(after);
+    const a = zpeTokenize(before);
+    const b = zpeTokenize(after);
 
     if (a.length > DIFF_TOKEN_CAP || b.length > DIFF_TOKEN_CAP) {
-      var segs0 = [];
-      if (before) segs0.push({ type: "del", text: String(before) });
-      if (after) segs0.push({ type: "ins", text: String(after) });
-      return segs0;
+      const segs = [];
+      if (before) segs.push({ type: "del", text: String(before) });
+      if (after) segs.push({ type: "ins", text: String(after) });
+      return segs;
     }
 
-    var n = a.length;
-    var m = b.length;
-    var w = m + 1;
-    var table = new Uint16Array((n + 1) * w);
+    const n = a.length;
+    const m = b.length;
+    const w = m + 1;
+    const table = new Uint16Array((n + 1) * w);
 
-    for (var i = n - 1; i >= 0; i -= 1) {
-      for (var j = m - 1; j >= 0; j -= 1) {
+    for (let i = n - 1; i >= 0; i -= 1) {
+      for (let j = m - 1; j >= 0; j -= 1) {
         table[i * w + j] =
           a[i] === b[j]
             ? table[(i + 1) * w + j + 1] + 1
@@ -629,88 +635,84 @@
       }
     }
 
-    var segs = [];
-    function push(type, text) {
-      var last = segs[segs.length - 1];
+    const segs = [];
+    const push = (type, text) => {
+      const last = segs[segs.length - 1];
       if (last && last.type === type) last.text += text;
-      else segs.push({ type: type, text: text });
-    }
+      else segs.push({ type, text });
+    };
 
-    var x = 0;
-    var y = 0;
-    while (x < n && y < m) {
-      if (a[x] === b[y]) {
-        push("same", a[x]);
-        x += 1;
-        y += 1;
-      } else if (table[(x + 1) * w + y] >= table[x * w + y + 1]) {
-        push("del", a[x]);
-        x += 1;
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) {
+        push("same", a[i]);
+        i += 1;
+        j += 1;
+      } else if (table[(i + 1) * w + j] >= table[i * w + j + 1]) {
+        push("del", a[i]);
+        i += 1;
       } else {
-        push("ins", b[y]);
-        y += 1;
+        push("ins", b[j]);
+        j += 1;
       }
     }
-    while (x < n) {
-      push("del", a[x]);
-      x += 1;
+    while (i < n) {
+      push("del", a[i]);
+      i += 1;
     }
-    while (y < m) {
-      push("ins", b[y]);
-      y += 1;
+    while (j < m) {
+      push("ins", b[j]);
+      j += 1;
     }
     return segs;
   }
 
+  /**
+   * 统计：改动块数、新增字符数、删除字符数、净变化。
+   * "处"按连续同类段的段数计。
+   */
   function zpeDiffStats(segs) {
-    var changed = 0;
-    var added = 0;
-    var removed = 0;
-    var prevType = "same";
-    for (var i = 0; i < segs.length; i++) {
-      var s = segs[i];
-      var len = Array.from(s.text).length;
+    let changedBlocks = 0;
+    let added = 0;
+    let removed = 0;
+    let prevType = "same";
+    for (const s of segs) {
+      const len = [...s.text].length;
       if (s.type === "ins") added += len;
       else if (s.type === "del") removed += len;
-      if (s.type !== "same" && prevType !== s.type) changed += 1;
+      if (s.type !== "same" && prevType !== s.type) changedBlocks += 1;
       prevType = s.type;
     }
-    return { changed: changed, added: added, removed: removed, delta: added - removed };
+    return { changed: changedBlocks, added, removed, delta: added - removed };
   }
 
+  /** 把 diff 段按换行重新切行，避免长提示词渲染成一整块。 */
   function zpeSegmentsToLines(segs) {
-    var lines = [[]];
-    for (var i = 0; i < segs.length; i++) {
-      var s = segs[i];
-      var parts = s.text.split("\n");
-      for (var k = 0; k < parts.length; k++) {
+    const lines = [[]];
+    for (const s of segs) {
+      const parts = s.text.split("\n");
+      parts.forEach((part, k) => {
         if (k > 0) lines.push([]);
-        if (parts[k] !== "") lines[lines.length - 1].push({ type: s.type, text: parts[k] });
-      }
+        if (part !== "") lines[lines.length - 1].push({ type: s.type, text: part });
+      });
     }
     return lines;
   }
 
-  function zpeFormatStats(st) {
-    var sign = st.delta >= 0 ? "+" : "-";
-    return (
-      st.changed +
-      " 处改动 · " +
-      st.added +
-      " 字新增 / " +
-      st.removed +
-      " 字替换 · 净 " +
-      sign +
-      Math.abs(st.delta) +
-      " 字"
-    );
+  /** 统计行文案。 */
+  function zpeFormatStats(stats) {
+    const sign = stats.delta >= 0 ? "+" : "-";
+    return `${stats.changed} 处改动 · ${stats.added} 字新增 / ${stats.removed} 字替换 · 净 ${sign}${Math.abs(stats.delta)} 字`;
   }
 
+  /** 一次算全：段序列 + 统计 + 行切分 + 文案。overlay 的 diff 块由本文件生成（tools/build-overlay.mjs）。 */
   function computeDiff(before, after) {
-    var segs = zpeDiffSegments(before, after);
-    var stats = zpeDiffStats(segs);
-    return { segs: segs, stats: stats, lines: zpeSegmentsToLines(segs), statsText: zpeFormatStats(stats) };
+    const segs = zpeDiffSegments(before, after);
+    const stats = zpeDiffStats(segs);
+    return { segs, stats, lines: zpeSegmentsToLines(segs), statsText: zpeFormatStats(stats) };
   }
+  /* [ZPE:DIFF:END] */
 
   function renderDiff() {
     if (!state.diff) {
