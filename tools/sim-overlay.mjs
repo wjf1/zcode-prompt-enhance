@@ -190,7 +190,7 @@ function buildSandbox(opts = {}) {
   cardEl = new FakeNode("div");
   cardEl.getBoundingClientRect = () => ({ left: 333, top: 608, width: 861, height: 105, right: 1194, bottom: 713 });
 
-  const btns = [
+  const btns = opts.rowRects || [
     { aria: "添加上下文", rect: [345, 673, 28, 28] },
     { aria: "切换模式", rect: [377, 673, 111, 28] },
     { aria: "workbuddy代理/cn:deepseek-v4.1-flash 最高", rect: [932, 673, 218, 28] },
@@ -563,6 +563,24 @@ console.log("\n[11] 体验与无障碍修复包（T11）");
   check("焦点不在 diff 卡内时 Esc 不被吞（未调用 stopPropagation）", stopped === false, { stopped });
   envD.window.__zpeTeardown();
   envL.window.__zpeTeardown();
+}
+
+console.log("\n[12] 工具行被原生按钮完全占满 → ✨ 隐藏（via=hidden，绝不压原生 UI）");
+{
+  // 真机 2026-10-31 实测：600px 极限宽度下响应式布局仍留空隙（cluster 不降级），
+  // 占满在真实 UI 不可达；此处用沙盒满铺工具行，验证 hidden 防线本身有效。
+  const envF = buildSandbox({
+    rowRects: Array.from({ length: 26 }, (_, i) => ({
+      aria: "占位按钮" + i,
+      rect: [341 + i * 33, 673, 28, 28], // 间隙 5px < BTN_W(28)，整行无 28px 空隙
+    })),
+  });
+  await sleep(500); // 超过 400ms 兜底周期，让定位循环跑完 settle
+  const stF = envF.window.__zpeState();
+  const wrapF = byIdIn(envF.body, "zpe-btn-wrap");
+  check("anchorVia = hidden（±192px shift 也找不到空隙）", stF.anchorVia === "hidden", stF.anchorVia);
+  check("按钮 wrap display=none", wrapF && wrapF.style.display === "none", wrapF && wrapF.style.display);
+  envF.window.__zpeTeardown();
 }
 
 console.log("\n" + (fail === 0 ? "ALL PASS" : fail + " FAILED"));

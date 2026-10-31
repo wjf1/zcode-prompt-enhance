@@ -402,9 +402,19 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
       `anchorVia: "cluster"`、`anchorDegraded: false`，按钮矩形 `[839,1304,28,28]`、
       `hitIsOwn: true`（中心命中自身无遮挡）、`statusbar: true`、`overlap: false`、
       `issues: none`。定位走 cluster 主路径，未降级。
-- [ ] **取消复验**（增强中再点 ✨ 能取消且草稿不变）—— 模拟器无对应用例，需真机操作。
-- [ ] **工具行被原生按钮完全占满时 ✨ 隐藏** —— 模拟器无对应用例（grep `占满` 命中 0），
-      属极端布局，需构造场景。
+- [x] **取消复验** —— **真机已确认（2026-10-31 终局）**：用户手动键入 9 字草稿 →
+      UIA `AXPress` 点击 ✨（真实 click 语义，不需要前台），600ms 后按钮 title 变为
+      **「正在增强，点击取消」**（增强进行中的直接证据），第二次 `AXPress` 命中取消。
+      peek 终态：`phase: idle`、`draftLen: 9`、草稿原文未变、`hasDiff: false`、
+      diff 卡未出现、`issues: none`。**取消功能真机闭环通过**。同轮顺带验证增强主链路：
+      9 字草稿 → 点 ✨ → 上游真实响应 → 256 字增强文本写入 + diff 卡「5 处改动 · 247 字新增」。
+- [x] **工具行被原生按钮完全占满时 ✨ 隐藏** —— **真机 + 模拟器双覆盖（2026-10-31 终局）**：
+      真机把窗口从 3006px 逐步缩到 **600px 极限宽度**，`anchorVia` 全程 `cluster`、
+      无遮挡、无 issues——ZCode 输入区为响应式 flex 布局，原生按钮组随之收缩重排，
+      **占满在真实可达布局下不可出现**（hidden 防线从未被需要，这正是设计意图）。
+      防线本身由 `tools/sim-overlay.mjs` **新增 [12] 用例**验证：沙盒满铺 26 个 28px
+      按钮（间隙 5px < BTN_W 28）→ `anchorVia = "hidden"` + `wrap display=none`
+      （±192px shift 也找不到空隙）。ALL PASS。
 
 **走查受阻说明（2026-10-31 更新）**：取消/占满两项需要先往输入框写入草稿。当日尝试
 三条真实输入路径全部被挡：① 3.17.1 的渲染进程可访问性树为空壳（`Chrome Legacy Window
@@ -421,6 +431,21 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 完整**（400 元素，✨ 按钮 / 输入框 / 状态条全部可见可定位），上轮"空壳"结论仅适用于
 窗口后台/最小化场景；② 排队态 `AXSetValue` 仍被宿主受控编辑器丢弃（value 原样回读），
 与上轮 ③ 相同。真实点击端到端走查维持待办：需空闲会话 + 真实键盘输入。
+**（此补记结尾的"维持待办"已在同日第三轮被推翻，见下方终局记录。）**
+
+**走查终局记录（2026-10-31 第三轮）——3 项全部闭环**：输入路径结论（实测沉淀）：
+- **真实键盘（CUA typeText）在窗口持前台时有效，排队态也能进草稿**——「setValue 被丢弃 =
+  无法就位」的旧结论仅适用于 programmatic 写入；真实键盘与 programmatic 是两条独立路径。
+- UIA `AXSetValue`（ValuePattern）对 contenteditable **无效**（不落 DOM）；
+  CUA `typeText` 长文本（130 字）会中途丢失，短文本（≤9 字）可靠——长草稿请分多次输入
+  或由用户手打。
+- **点击类操作（UIA `AXPress`/Invoke）不需要前台**，对后台窗口有效——取消复验全程
+  用的就是它。
+- 窗口最小化时 UIA 报「no visible top-level window」、AX 树整体不可得；恢复窗口可用
+  Win32 `ShowWindow(SW_RESTORE)`，但恢复后的窗口**没有前台焦点**，键盘输入依然不可用，
+  需用户手动点击激活。
+走查过程中的遗留现场：B 会话输入框还留着 9 字测试草稿「测试取消复验用草稿」，无害，
+可随手删。
 
 若按钮不出现（例如 ZCode 升级后），排查顺序：
 
@@ -434,8 +459,8 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 
 | # | 待办 | 说明 |
 |---|---|---|
-| P0 | ~~0.3.x 真机重启验证~~ **重启已完成（2026-10-27）** | 0.3.1 已确认在跑（见 §5.1.1）。~~anchorVia/anchorDegraded~~ **已真机确认（2026-10-31，cluster 未降级）**。剩 2 项走查：取消复验、工具行占满（需窗口前台 + 真实键盘写草稿） |
-| P1 | 真实点击走查（部分完成） | `tools/sim-overlay.mjs` 已覆盖撤销/Esc/浅色/diff 卡位置共 4 项；真机已确认按钮存在。剩 3 项待空闲会话补验 |
+| P0 | ~~0.3.x 真机重启验证~~ **已全部闭环（2026-10-31）** | 0.3.1 已确认在跑（见 §5.1.1）。anchorVia、取消复验、工具行占满三项走查**全部真机/双覆盖闭环**，无剩余 |
+| P1 | ~~真实点击走查~~ **已完成（2026-10-31）** | `tools/sim-overlay.mjs` 覆盖撤销/Esc/浅色/diff 卡位置 + 新增 [12] 占满隐藏；真机完成按钮存在、anchorVia、取消复验、极限宽度布局 |
 | P2 | 上下文感知 | `core/context.mjs` 未写。`inject-main.cjs` 已预留 `context_enabled` 与 `payload.context` 透传，`prompt.mjs` 已有 `CONTEXT_SYSTEM_ADDITION` |
 | P2 | 流式预览 | 目前进度只更新按钮 tooltip/aria-label，没有在草稿区做流式预览（避免与用户编辑打架） |
 | P2 | 插件化双轨 | 用官方 hooks 做「提交时增强」兜底（`UserPromptSubmit` 只有 `additionalContext`，无法原地回填）。任务书 §5.B。**等外部依赖**：ZCode 官方 hooks 能力 |
@@ -562,8 +587,8 @@ node -e "fetch('http://127.0.0.1:7863/v1/models').then(r=>console.log(r.status))
 
 ## 7. 下一步接手请从这里开始
 
-1. ~~重启 ZCode 做真实点击走查~~ **重启已完成（2026-10-27，0.3.1 在跑）**；
-   只剩 3 项待补验，清单见 §5.1.1 末尾（`anchorVia`/`anchorDegraded`、取消复验、工具行占满）；
+1. ~~重启 ZCode 做真实点击走查~~ **全部完成（2026-10-31）**：0.3.1 在跑 + 3.17.1 迁移后重注入 +
+   三项走查（`anchorVia`/取消复验/工具行占满）全部闭环，清单见 §5.1.1 终局记录；
 2. 若按钮没出现，按 §5.1.1 的 5 步排查；
 3. 若出现 `readback-mismatch`，查**§6 的「已知坑」第 2 条**（多行草稿的 Lexical 结构 —
    `innerText` 在 `<p>` 段落间多一个换行，校验基准已改为 editor state）；
