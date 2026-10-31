@@ -26,6 +26,7 @@ const server = http.createServer((req, res) => {
       console.log("btn        :", JSON.stringify(o.btnRect), "aria-disabled:", o.ariaDisabled);
       console.log("btnTitle   :", o.btnTitle);
       console.log("anchor     :", JSON.stringify(o.lastAnchor));
+      console.log("anchorVia  :", o.anchorVia, "| anchorDegraded:", o.anchorDegraded);
       console.log("hitIsOwn   :", o.hitIsOwn, "| hit:", o.hitAtBtnCenter);
       console.log("composer   :", JSON.stringify(o.composerRect));
       console.log("diff       :", o.diffDisplay, JSON.stringify(o.diffRect));
@@ -63,6 +64,8 @@ server.listen(0, "127.0.0.1", () => {
       rep.hasDiff = st.hasDiff;
       rep.btnTitle = st.btnTitle;
       rep.lastAnchor = st.lastAnchor || null;
+      rep.anchorVia = (st.lastAnchor && st.lastAnchor.via) || "";
+      rep.anchorDegraded = !!st.anchorDegraded;
       rep.placeError = st.placeError || "";
       var rect = typeof window.__zpeRect === "function" ? window.__zpeRect() : {};
       rep.composerRect = rect.composer || null;
