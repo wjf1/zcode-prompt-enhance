@@ -3,6 +3,43 @@
 本项目的所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+**非阻塞 P2/P3/P4 批次：上下文感知、构建期拆分、升级检测、/enhance 兜底。运行时注入路径行为不变
+（上下文默认关闭 = 与基线逐字节一致）。测试 140 → 171。**
+
+### 新增
+
+- **P2 上下文感知**：新增 `core/context.mjs` —— 把上报的原始会话上下文装配成受预算约束的
+  `<conversation_context>` 内容（从新到旧保留、条数/字符双预算、角色白名单归一、最新一条独超预算时保尾截断）。
+  `inject-main.cjs` 接线：`context_enabled` 开启时经 `assembleContext` 装配后传给增强链路，
+  不再透传原始 `payload.context`；默认关闭 = 与无上下文基线逐字节一致。
+  渲染端采集待宿主提供稳定的聊天记录读取方式后接入（主进程链路已就绪）。
+- **P3 升级检测提示**：新增 `core/versioncheck.mjs`（纯函数判定）+ `inject-main.cjs` 启动检查 ——
+  宿主启动时对比 `app.getVersion()` 与 `.zpe-host-state.json` 里上次记录的版本，
+  变化则日志提示重跑 `node repatch_asar.mjs --check`；`__ZPE_BOOT__` 新增
+  `hostVersion` / `hostVersionChanged` 字段。注入被整份替换时 loader 不运行，该提示在
+  "注入已丢"场景不可达（以 `--check` 为准）。
+- **P4 `/enhance` 兜底命令**：新增 `tools/enhance-cli.mjs`（stdin / 参数 / `--file` 三种草稿入口，
+  复用 core 的 provider 路由与错误码归一化，结果走 stdout、错误走 stderr，绝不回显 apiKey），
+  配 `commands/enhance.md`（ZCode 斜杠命令）与 `skills/enhance/SKILL.md`（技能）。
+  ✨ 注入浮层失效期间可走对话链路完成增强，结果落对话手动复制回输入框。
+- 状态文件 `.zpe-host-state.json`（gitignore）记录宿主版本，写入走临时文件 + rename。
+
+### 变更
+
+- **P2 构建期拆分**：`core/diff.mjs` 成为 diff 算法单一事实来源，overlay 内嵌 diff 块改由
+  `tools/build-overlay.mjs` 构建期生成（`npm run build:overlay`，`--check` 校验产物），不再双份手工维护；
+  `core/diff.mjs` 新增 `computeDiff` 组合导出；`test/overlay-diff.test.mjs` 保留为行为级产物校验
+  （新增 `--check` 用例）；`tools/check-core-url.mjs` 补齐 context / versioncheck 两个模块的导入核验。
+
+### 有意不做
+
+- **P2 流式预览维持现状**：增强过程不在草稿区逐步显示。预览需要周期性整体替换编辑器状态，
+  与用户键入直接竞争（用户输入会被下一次预览写入覆盖），且会让「请求期间改草稿 → 放弃结果」
+  的既有保护失效；撤销栈也会被半成品污染。进度已可经按钮 tooltip / aria-label 实时观察。
+  待未来宿主提供"草稿区只读锁定"能力后再评估。
+
 ## [0.3.2] - 2026-10-30
 
 **ZCode 3.17.1 重新部署 + 工具链路径修复。运行时行为零变更，0.3.1 的注入逻辑原样重新部署。**

@@ -130,6 +130,25 @@ node tools/check-model-follow.mjs     # 用真机 aria 样本验证匹配算法
 node tools/check-follow-live.mjs      # 真实解析 + 真实调用每个路由
 ```
 
+### 会话上下文（可选，默认关闭）
+
+`config.json` 的 `context_enabled` 打开后，增强请求可以携带一段受预算约束的会话上下文
+（`<conversation_context>`），帮助改写时解析指代与既有约定：
+
+```json
+{
+  "context_enabled": false,
+  "context_max_messages": 8,
+  "context_max_chars": 4000
+}
+```
+
+- 装配逻辑在 `core/context.mjs`：从新到旧保留（越靠近草稿的轮次越优先），
+  条数与字符双预算，输出经定界符转义后进入 user message。
+- **默认关闭 = 行为与无上下文基线逐字节一致**（system prompt 不追加上下文段，有测试守住）。
+- 渲染端目前不上报上下文（读取聊天记录依赖宿主 DOM 结构，无稳定选择器）；
+  主进程装配链路已就绪，未来采集端接入后即生效。
+
 ---
 
 ## 日常使用
@@ -188,13 +207,35 @@ node repatch_asar.mjs            # 重新注入（需先完全退出 ZCode）
 node -e "const b=require('fs').readFileSync('E:/ZCode/resources/app.asar');const s=b.toString('latin1');console.log('enhancePrompt 调用点:', s.split('enhancePrompt').length-1)"
 ```
 
+0.3.3 起有轻量的**升级检测**：注入存活期间，loader 在宿主启动时对比 `app.getVersion()`
+与上次记录（`.zpe-host-state.json`），检测到版本变化会在日志中提示重跑 `--check`。
+注入被整份替换时 loader 本身不会运行，该提示不可达 —— 按钮消失后请直接跑上面的命令。
+
+### /enhance 兜底命令（✨ 失效期间）
+
+✨ 按钮消失或注入丢失期间，可走命令行链路把草稿发给同一套增强 core（复用 provider
+路由 / 超时 / 错误码；不跟随会话模型，走 `config.json` 默认路由）。结果落在对话里，
+手动复制回输入框：
+
+```bash
+node tools/enhance-cli.mjs "草稿文本"         # 直接传参
+node tools/enhance-cli.mjs --file draft.txt  # 经文件传入
+echo 草稿 | node tools/enhance-cli.mjs       # 经 stdin 传入
+```
+
+装成 ZCode 命令 / 技能（二选一即可）：
+
+- 命令：把 `commands/enhance.md` 复制为 `~/.zcode/commands/enhance.md`
+  （或项目级 `.zcode/commands/enhance.md`），之后即可 `/enhance <草稿>`；
+- 技能：`npx skills add wjf1/zcode-prompt-enhance -s enhance -a zcode -g -y`。
+
 ### 开发
 
 改 `overlay-prompt-enhance.js` 或 `core/*.mjs` **不需要重启**：注入层每 2 秒检查 mtime，
 变化后会自动重注入（会先用 `new Function` 校验语法，写到一半的保存不会污染运行中的页面）。
 
 ```bash
-npm test                          # 140 项单测
+npm test                          # 171 项单测
 node tools/preflight.mjs          # 静态体检（id 唯一性、安全断言、接口对齐）
 node tools/bridge-selftest.mjs    # 桥接层自测（含 Host 校验与真实模型调用）
 node tools/inject-gate-selftest.mjs  # 注入门禁时序自测（stub electron，防空 URL 拒注回归）
@@ -206,6 +247,11 @@ node tools/verify-writedraft.mjs  # 真机多行写入一致性（editor state �
 node tools/peek.mjs               # 真机单次取证：读取当前浮层状态与 DOM 断言
 node tools/e2e-model.mjs          # 真实模型端到端
 ```
+
+> ⚠️ diff 算法的单一事实来源是 `core/diff.mjs`：overlay 内嵌块由
+> `npm run build:overlay` 构建期生成，**不要手改** overlay 里 `[ZPE:DIFF:BEGIN]`
+> 标记区内的代码。改了 `core/diff.mjs` 后运行该脚本同步；`--check` 可校验产物是否最新
+> （`test/overlay-diff.test.mjs` 保留为行为级产物校验）。
 
 ### 卸载
 
@@ -225,6 +271,9 @@ node uninstall.mjs    # 移除注入行，还原客户端（需先完全退出 Z
 - `allowed_window_hosts` 默认为空。若某次改版把主窗口改成远程加载，按钮会消失；
   把实际主机名填进该字段即可。**不要**为了省事默认放行所有 `http/https`。
 - 工具行被原生按钮完全占满时，✨ 会隐藏而不是叠在发送按钮上 —— 这是有意的取舍，不是故障。
+- **没有流式预览**（增强过程不在草稿区逐步显示）—— 有意取舍：预览要周期性整体替换
+  编辑器状态，与用户键入直接竞争，且会让「请求期间改草稿即放弃结果」的保护失效。
+  进度经按钮 tooltip 实时可见，完成后一步落全量结果 + 差异卡。
 
 ## 设计要点
 

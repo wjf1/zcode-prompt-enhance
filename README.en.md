@@ -133,6 +133,28 @@ node tools/check-model-follow.mjs     # validate the matching algorithm against 
 node tools/check-follow-live.mjs      # resolve and really call each route
 ```
 
+### Conversation context (optional, off by default)
+
+With `context_enabled` in `config.json`, an enhance request may carry a budgeted slice of
+conversation context (`<conversation_context>`) so the rewrite can resolve pronouns and prior
+agreements:
+
+```json
+{
+  "context_enabled": false,
+  "context_max_messages": 8,
+  "context_max_chars": 4000
+}
+```
+
+- Assembly lives in `core/context.mjs`: newest-first retention (turns closest to the draft win),
+  dual budget on message count and characters, delimiter-escaped before entering the user message.
+- **Off by default = byte-identical to the no-context baseline** (the system prompt gains no context
+  section; guarded by tests).
+- The renderer does not report context yet (reading the chat log depends on host DOM structure with
+  no stable selectors); the main-process assembly pipeline is ready and takes effect once a
+  collector is wired up.
+
 ---
 
 ## Daily use
@@ -196,6 +218,30 @@ Check whether ZCode has shipped its own enhancement feature (in which case this 
 node -e "const b=require('fs').readFileSync('E:/ZCode/resources/app.asar');const s=b.toString('latin1');console.log('enhancePrompt call sites:', s.split('enhancePrompt').length-1)"
 ```
 
+Since 0.3.3 there is a lightweight **update detector**: while the injection is alive, the loader compares
+`app.getVersion()` against the last recorded version (`.zpe-host-state.json`) at host startup and logs a
+hint to re-run `--check` when the version changed. When the asar was replaced wholesale the loader itself
+does not run, so the hint is unreachable in that case — run the command above directly once the button
+disappears.
+
+### /enhance fallback command (while ✨ is broken)
+
+While the button or the injection is gone, a CLI path sends the draft to the same enhancement core
+(reusing provider routing / timeout / error codes; uses the `config.json` default route instead of
+following the session model). The result lands in the conversation for manual copy-paste:
+
+```bash
+node tools/enhance-cli.mjs "draft text"         # as an argument
+node tools/enhance-cli.mjs --file draft.txt     # from a file
+echo draft | node tools/enhance-cli.mjs         # from stdin
+```
+
+Install as a ZCode command / skill (either is enough):
+
+- Command: copy `commands/enhance.md` to `~/.zcode/commands/enhance.md` (or the project-level
+  `.zcode/commands/enhance.md`), then use `/enhance <draft>`;
+- Skill: `npx skills add wjf1/zcode-prompt-enhance -s enhance -a zcode -g -y`.
+
 ### Development
 
 Editing `overlay-prompt-enhance.js` or `core/*.mjs` needs **no restart**: the loader polls mtime every 2 s
@@ -203,7 +249,7 @@ and re-injects on change (it validates syntax with `new Function` first, so a ha
 the running page).
 
 ```bash
-npm test                            # 140 unit tests
+npm test                            # 171 unit tests
 node tools/preflight.mjs            # static checks (unique ids, security, interface alignment)
 node tools/bridge-selftest.mjs      # bridge self-test incl. Host check and a real model call
 node tools/inject-gate-selftest.mjs # injection-gate lifecycle self-test (stubbed electron)
@@ -215,6 +261,12 @@ node tools/verify-writedraft.mjs    # live multi-line write consistency (judged 
 node tools/peek.mjs                 # one-shot live inspection of the overlay + DOM assertions
 node tools/e2e-model.mjs            # real model end to end
 ```
+
+> ⚠️ The single source of truth for the diff algorithm is `core/diff.mjs`: the block embedded in the
+> overlay is generated at build time by `npm run build:overlay` — **never hand-edit** the code inside the
+> `[ZPE:DIFF:BEGIN]` marker region of the overlay. After changing `core/diff.mjs`, run that script to sync;
+> `--check` validates that the artifact is current (`test/overlay-diff.test.mjs` stays as a behavioral
+> artifact check).
 
 ### Uninstall
 
@@ -238,6 +290,10 @@ Only this project's line is removed; the status bar's injection is untouched.
   `http`/`https`.
 - When the toolbar is completely full, ✨ hides rather than overlapping the send button. That is a
   deliberate trade-off, not a bug.
+- **No streaming preview** (the draft area never shows partial output while enhancing) — deliberate:
+  previewing would require periodically replacing the whole editor state, racing the user's typing and
+  defeating the "draft changed during request → discard result" guard. Progress is visible on the
+  button tooltip; the full result lands in one step with the diff card.
 
 ## Design notes
 

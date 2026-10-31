@@ -1,5 +1,5 @@
 {
-  "_comment": "复制为 config.json 后按本机情况调整。留空则走 provider_config.json 的第一条可用 anthropic-messages 路由。max_input_chars 超限时拒绝（不截断）。allowed_window_hosts 为空数组 = 只信任本地打包页面（file:/app:/chrome-extension:/devtools:）并注入令牌；只有在确认需要给远程页面注入时才填主机名，例如 [\"zcode.z.ai\"]。",
+  "_comment": "复制为 config.json 后按本机情况调整。留空则走 provider_config.json 的第一条可用 anthropic-messages 路由。max_input_chars 超限时拒绝（不截断）。context_enabled 开启后增强请求可携带会话上下文（core/context.mjs 装配，默认关闭 = 与无上下文基线一致；渲染端采集尚未接入）。allowed_window_hosts 为空数组 = 只信任本地打包页面（file:/app:/chrome-extension:/devtools:）并注入令牌；只有在确认需要给远程页面注入时才填主机名，例如 [\"zcode.z.ai\"]。",
   "provider": "",
   "model": "",
   "max_input_chars": 12000,

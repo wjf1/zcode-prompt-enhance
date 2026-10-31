@@ -1,8 +1,8 @@
 # HANDOFF.md — 接力开发文档
 
 > 项目：zcode-prompt-enhance（ZCode 提示词增强）
-> 当前阶段：**v0.3.2 已随 ZCode 3.17.1 重新注入，待重启验证**
-> 最后更新：2026-10-30
+> 当前阶段：**v0.3.2 已随 ZCode 3.17.1 重新注入并走查闭环；工作区完成非阻塞 P2/P3/P4 批次（Unreleased，见 §4.0.3）**
+> 最后更新：2026-10-31
 
 ---
 
@@ -85,7 +85,7 @@ ZCode 于 2026-10-29 升级到 **3.17.1**，asar 被整份替换（374,627,566 �
 | 语言 | 注入层 `.cjs`（主进程 CommonJS）；核心逻辑 `.mjs`；浮层是纯 IIFE 字符串注入 |
 | 运行时依赖 | **零**（prompt / diff / gates / SSE / trust 全手写） |
 | 开发期依赖 | `@electron/asar`，自动装到 `.asar-tools/`（首次 `repatch` 时） |
-| 测试 | `node --test "test/*.test.mjs"`（Node 内置，**140 项**） |
+| 测试 | `node --test "test/*.test.mjs"`（Node 内置，**171 项**） |
 | 模型协议 | Anthropic Messages，`POST {baseUrl}/messages`，SSE 流式 |
 
 ### 核心命令
@@ -128,19 +128,25 @@ node tools/e2e-model.mjs               # 真实模型端到端
 
 ```
 F:\AI\Zcode\zcode-prompt-enhance\
-├── inject-main.cjs              # 主进程 loader：注入浮层、起本地桥、provider 路由、三闸门
-├── overlay-prompt-enhance.js    # 渲染端浮层（IIFE 字符串注入）：按钮/读写/撤销栈/diff 卡
+├── inject-main.cjs              # 主进程 loader：注入浮层、起本地桥、provider 路由、三闸门、宿主版本检测
+├── overlay-prompt-enhance.js    # 渲染端浮层（IIFE 字符串注入）：按钮/读写/撤销栈/diff 卡；diff 块由构建期生成
 ├── core/
 │   ├── prompt.mjs               # system prompt + frameUserPrompt + cleanEnhancedText
 │   ├── provider.mjs             # provider_config.json 候选路径探测 + 形状判定 + 白名单 + 路由选择
 │   ├── enhancer.mjs             # SSE 客户端 + 竞速超时 + 错误码归一化 + hadFirstChunk 标记
-│   ├── diff.mjs                 # token 级 LCS（中文逐字/英文词级）
+│   ├── diff.mjs                 # token 级 LCS（中文逐字/英文词级）——SSOT，overlay 内嵌块由此生成
 │   ├── gates.mjs                # 熔断 → 限流 → 并发
-│   └── trust.mjs                # 窗口 URL 可信判定（0.3.0 新增，纯函数、零依赖）
+│   ├── trust.mjs                # 窗口 URL 可信判定（0.3.0 新增，纯函数、零依赖）
+│   ├── context.mjs              # 会话上下文装配（Unreleased：预算从新到旧，默认关闭）
+│   └── versioncheck.mjs         # 宿主版本变化判定（Unreleased：纯函数 + 状态文件读写）
 ├── repatch_asar.mjs             # 解包→追加 __ZPE_PATCH__→重打包→替换（3 份备份）
 ├── uninstall.mjs                # 移除注入行（导出 stripLoader 供测试）
-├── test/                        # 9 个测试文件，140 项
-├── tools/                       # 13 个校验/探针脚本
+├── commands/
+│   └── enhance.md               # /enhance 斜杠命令（P4 兜底，Unreleased）
+├── skills/
+│   └── enhance/SKILL.md         # enhance 技能（P4 兜底，Unreleased）
+├── test/                        # 13 个测试文件，171 项
+├── tools/                       # 15 个校验/探针脚本（含 build-overlay.mjs、enhance-cli.mjs）
 ├── config.json / config.example.json
 └── README.md / README.en.md / CHANGELOG.md / DESIGN.md / APPENDIX.md / HANDOFF.md
 ```
@@ -171,7 +177,7 @@ F:\AI\Zcode\zcode-prompt-enhance\
 | provider 凭据与路由 | `~/.zcode/v2/provider_config.json` → `config.providerConfigRules.providerRules[]` + `config.providerOrder` |
 | 本项目配置 | `config.json`（gitignore） |
 | 提示词模板 | `core/prompt.mjs`，改动必须同步 `test/prompt.test.mjs` |
-| diff 算法 | `core/diff.mjs` **与** overlay 内的 `zpe*` 副本，两者由 `test/overlay-diff.test.mjs` 强制一致 |
+| diff 算法 | `core/diff.mjs`（单一事实来源）；overlay 内嵌块由 `tools/build-overlay.mjs` 构建期生成（`npm run build:overlay`，勿手改标记区），`test/overlay-diff.test.mjs` 保留为行为级产物校验 |
 
 ### 3.3 与状态栏项目的边界（关键）
 
@@ -187,7 +193,25 @@ F:\AI\Zcode\zcode-prompt-enhance\
 
 ## 4. 最近一轮变更与交付成果
 
-### 4.0 v0.3.0（当前）：加固与适配
+### 4.0-next（Unreleased，2026-10-31）：非阻塞 P2/P3/P4 批次
+
+本批四项功能 + 一项"有意不做"裁决，全部零宿主操作（不 repatch、不动 asar、不重启）。
+注入路径行为不变：上下文默认关闭时增强链路与基线逐字节一致。**测试 140 → 171，npm test 全绿，
+tools/preflight ALL PASS，check-core-url 六模块全 OK。**
+
+| 项 | 内容 | 关键文件 |
+|---|---|---|
+| P2 上下文感知 | `core/context.mjs`：原始上下文 → 受预算的 `<conversation_context>`（从新到旧、条数/字符双预算、角色白名单、最新独超预算保尾）；`inject-main.cjs` 在 `context_enabled` 开启时装配后传入增强链路，不再透传原始 payload.context。渲染端采集待宿主能力，主进程链路就绪 | `core/context.mjs`、`test/context.test.mjs`（11 项） |
+| P2 构建期拆分 | diff 单一源：`core/diff.mjs`（新增 `computeDiff` 导出）→ `tools/build-overlay.mjs` 机械变换（剥 export、重命名 zpe*、缩进）生成 overlay `[ZPE:DIFF:BEGIN/END]` 标记区；`npm run build:overlay` 同步、`--check` 校验；一致性测试降级为产物校验 | `tools/build-overlay.mjs`、`core/diff.mjs`、`test/overlay-diff.test.mjs` |
+| P3 升级检测 | `core/versioncheck.mjs` 纯函数判定（none/record/warn-recheck/warn-repatch 四分支）+ `inject-main.cjs` 启动时对比 `app.getVersion()` 与 `.zpe-host-state.json`；变化 → 日志提示重跑 `--check`；`__ZPE_BOOT__` 带 `hostVersion`/`hostVersionChanged`。注意：loader 能跑 = 注入在，warn-repatch 分支在 loader 内不可达（供外部工具复用） | `core/versioncheck.mjs`、`test/versioncheck.test.mjs`（13 项） |
+| P4 /enhance 兜底 | `tools/enhance-cli.mjs`（参数/`--file`/stdin 三入口，复用 core 路由与错误码，绕过桥与闸门，不跟随会话模型）+ `commands/enhance.md`（斜杠命令）+ `skills/enhance/SKILL.md`；结果落对话手动复制 | `tools/enhance-cli.mjs`、`test/enhance-cli.test.mjs`（6 项） |
+| P2 流式预览 | **有意不做**（裁决见 §5.2 表）：预览需周期性整体替换编辑器状态，与用户键入竞争、击穿"请求期间改草稿即放弃"保护、污染撤销栈；待宿主提供草稿只读锁定后再评估 | 无代码，文档裁决 |
+
+**本轮踩坑**：生成块头部注释未闭合时，`node --check` 仍通过（注释吞掉 `DIFF_TOKEN_CAP`/`zpeTokenize`
+直到函数 doc 注释的 `*/` 才闭合）—— 语法合法但运行时必崩。已修（buildBlock 头部以 `*/` 收尾），
+并记入 §6.3 陷阱 27。
+
+### 4.0 v0.3.0：加固与适配
 
 按一份外部开发任务书（T01–T11）执行，全部完成。核心是三个 P0：
 
@@ -461,13 +485,13 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 |---|---|---|
 | P0 | ~~0.3.x 真机重启验证~~ **已全部闭环（2026-10-31）** | 0.3.1 已确认在跑（见 §5.1.1）。anchorVia、取消复验、工具行占满三项走查**全部真机/双覆盖闭环**，无剩余 |
 | P1 | ~~真实点击走查~~ **已完成（2026-10-31）** | `tools/sim-overlay.mjs` 覆盖撤销/Esc/浅色/diff 卡位置 + 新增 [12] 占满隐藏；真机完成按钮存在、anchorVia、取消复验、极限宽度布局 |
-| P2 | 上下文感知 | `core/context.mjs` 未写。`inject-main.cjs` 已预留 `context_enabled` 与 `payload.context` 透传，`prompt.mjs` 已有 `CONTEXT_SYSTEM_ADDITION` |
-| P2 | 流式预览 | 目前进度只更新按钮 tooltip/aria-label，没有在草稿区做流式预览（避免与用户编辑打架） |
+| P2 | ~~上下文感知~~ **已完成（2026-10-31，Unreleased）** | `core/context.mjs` 装配（从新到旧、双预算、角色白名单、保尾截断）+ `inject-main.cjs` 按 `context_enabled` 门控接线，默认关闭 = 与基线逐字节一致。剩余子项：渲染端上下文采集依赖宿主聊天记录 DOM（无稳定选择器），待宿主能力，主进程链路已就绪 |
+| P2 | 流式预览 | **有意不做（2026-10-31 裁决）**。理由：① 预览必须周期性 `setEditorState` 整体替换编辑器状态，用户在两次预览之间的键入会被下一次写入覆盖（不可控竞态）；② overlay 既有安全设计「请求期间二次读草稿比对、改过即放弃结果」会被流式写入常态化击穿或被迫拆除；③ 撤销栈被半成品污染；④ 任务书方案未含"草稿区只读锁定"，宿主也无此能力。现状已有等价观测：progress 经 NDJSON 实时回推到按钮 tooltip/aria-label。**待宿主提供草稿只读锁定能力后再评估** |
 | P2 | 插件化双轨 | 用官方 hooks 做「提交时增强」兜底（`UserPromptSubmit` 只有 `additionalContext`，无法原地回填）。任务书 §5.B。**等外部依赖**：ZCode 官方 hooks 能力 |
-| P2 | 构建期拆分 | 单文件 + diff 双份维护（`core/diff.mjs` 与 overlay 内副本，由 `test/overlay-diff.test.mjs` 强制一致）。任务书 §5.C |
+| P2 | ~~构建期拆分~~ **已完成（2026-10-31，Unreleased）** | `core/diff.mjs` 为单一事实源（新增 `computeDiff` 导出），overlay 内嵌块由 `tools/build-overlay.mjs` 构建期生成（`npm run build:overlay`，`--check` 校验）；`test/overlay-diff.test.mjs` 降级为行为级产物校验 |
 | P3 | 设置面板 | 目前只能改 `config.json`。Manifest `userConfig` 的 `sensitive` 项在 ZCode 里无法输入/持久化。**受阻于宿主能力** |
-| P3 | 升级检测提示 | 增加「检测到 ZCode 版本变化 → 提示重跑 repatch」的启动检查 |
-| P4 | `/enhance` 兜底命令 | E 失效期间可用：一个 skill + command，结果落对话 |
+| P3 | ~~升级检测提示~~ **已完成（2026-10-31，Unreleased）** | `core/versioncheck.mjs` 判定（none/record/warn-recheck/warn-repatch）+ loader 启动对比 `app.getVersion()` 与 `.zpe-host-state.json`，变化提示重跑 `--check`；`__ZPE_BOOT__` 带 `hostVersion`/`hostVersionChanged`。边界：注入被整份替换时 loader 不运行，提示在该场景不可达 |
+| P4 | ~~`/enhance` 兜底命令~~ **已完成（2026-10-31，Unreleased）** | `tools/enhance-cli.mjs`（参数/`--file`/stdin，复用 core，绕过桥与闸门，不跟随会话模型）+ `commands/enhance.md` 斜杠命令 + `skills/enhance/SKILL.md` 技能；结果落对话手动复制。安装方式见 README「/enhance 兜底命令」 |
 
 ### 5.3 已验证的结论（含真机）
 
@@ -569,6 +593,7 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 | 24 | **`cardOf` 绝不能返回 null** | `place()` 直接崩、按钮永久消失；无候选时 `return last` |
 | 25 | **桥的 Host 校验必须用 `node:http` 验证，不能用 `fetch`** | undici 把 `Host` 当禁止修改的头，传了也会被忽略，断言等于没测 |
 | 26 | **`web-contents-created` 时窗口还没有 URL** | 创建时只能按类型过滤，可信判定放在 `inject()` 内（URL 已就绪）；否则空 URL 被拒、钩子永不挂上（v0.3.0 真机事故） |
+| 27 | **生成代码块里的头部注释必须闭合** | `tools/build-overlay.mjs` 曾把头部说明行接在 `/* [ZPE:DIFF:BEGIN]` 之后没有 `*/` 收尾：注释吞掉 `DIFF_TOKEN_CAP`/`zpeTokenize` 直到块内第一个函数 doc 注释的 `*/` 才闭合 —— `node --check` 仍通过（语法合法），运行时必 ReferenceError。教训：生成器产出的注释边界要有显式闭合，且产物校验不能只靠语法检查（overlay-diff 的行为级用例能兜住这类事故） |
 
 ### 6.4 证据查证命令
 
@@ -592,4 +617,7 @@ node -e "fetch('http://127.0.0.1:7863/v1/models').then(r=>console.log(r.status))
 2. 若按钮没出现，按 §5.1.1 的 5 步排查；
 3. 若出现 `readback-mismatch`，查**§6 的「已知坑」第 2 条**（多行草稿的 Lexical 结构 —
    `innerText` 在 `<p>` 段落间多一个换行，校验基准已改为 editor state）；
-4. 三项补验通过后再推进 P2 的上下文感知（`core/context.mjs`，接口已预留）。
+4. ~~推进 P2 的上下文感知~~ **主进程侧已完成（Unreleased）**：`core/context.mjs` 装配 + 桥接线就绪，
+   剩余子项是渲染端上下文采集（依赖宿主聊天记录 DOM，无稳定选择器）；
+5. 下一个外部依赖窗口：ZCode 官方 hooks 能力（P2 插件化双轨）或草稿只读锁定（流式预览重评估）；
+   两个 P2 受阻项都以宿主能力为前置，其余待办已清空。Unreleased 批次待下一次打 Tag 时随版本发布。
