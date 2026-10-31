@@ -1,6 +1,10 @@
 # 本地配置（含 asar 路径等本机差异），不入库
 config.json
 
+# 宿主版本检测状态（loader 启动时写入，记录上次见到的 ZCode 版本）
+.zpe-host-state.json
+.zpe-host-state.json.tmp-*
+
 # asar 工具装在这里，不入库
 .asar-tools/
 

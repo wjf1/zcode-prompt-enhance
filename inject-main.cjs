@@ -396,6 +396,10 @@ function bootSource() {
     token: BRIDGE_TOKEN,
     maxInputChars: c.max_input_chars,
     version: "0.3.1",
+    // P3 升级检测：本次启动探测到的宿主版本与"相对上次是否变化"（异步检测未完成
+    // 时为 null/false，best-effort；tools/peek.mjs 可读取取证）
+    hostVersion: hostVerInfo.version || null,
+    hostVersionChanged: hostVerInfo.changed || false,
   };
   return "window.__ZPE_BOOT__=" + JSON.stringify(boot) + ";\n" + overlaySrc;
 }
@@ -491,6 +495,42 @@ function hotReload() {
 /* ---------------- 启动 ---------------- */
 readCfg();
 startBridge();
+
+/* ---------------- 宿主版本变化检测（P3 升级检测提示） ---------------- */
+/* ZCode 升级会整份替换 asar → 注入静默丢失（已发生过两次）。这里在宿主主进程
+ * 启动时对比 app.getVersion() 与上次记录（.zpe-host-state.json，gitignore）：
+ * 版本变化 → 打日志提示重跑 repatch --check。判定函数在 core/versioncheck.mjs。
+ * 注意本检查能运行 = 注入行还在，因此这里只会出现「注入仍存活」的复核提示；
+ * 「注入已丢需重跑 repatch」的分支供外部工具复用（loader 内不可达）。 */
+const HOST_STATE_FILE = path.join(HERE, ".zpe-host-state.json");
+let hostVerInfo = { version: "", changed: false, previous: null };
+(async () => {
+  try {
+    let v = "";
+    try {
+      v = String(app.getVersion() || "");
+    } catch {}
+    const vc = await import(pathToFileUrl(path.join(HERE, "core", "versioncheck.mjs")));
+    const st = vc.readHostState(HOST_STATE_FILE);
+    const verdict = vc.evaluateHostVersion({
+      lastSeen: st.ok ? st.state.lastSeenVersion : "",
+      current: v,
+      patched: true,
+    });
+    if (verdict.zh) LOG(verdict.zh);
+    if (v) {
+      const w = vc.writeHostState(HOST_STATE_FILE, { lastSeenVersion: v });
+      if (!w.ok) LOG("宿主版本记录写入失败:", w.error);
+    }
+    hostVerInfo = {
+      version: v,
+      changed: verdict.changed,
+      previous: st.ok ? st.state.lastSeenVersion || null : null,
+    };
+  } catch (e) {
+    LOG("宿主版本检测失败:", e && e.message);
+  }
+})();
 
 /* ⚠️ web-contents-created 触发时窗口还没有 URL（getURL() 返回空串），这里只能按
  * 窗口类型过滤；可信判定（URL 校验）在 inject() 内做 —— 那时 did-finish-load
