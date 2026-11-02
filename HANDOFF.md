@@ -14,8 +14,8 @@
 | 版本 | `0.3.2` |
 | 位置 | 开发与部署统一在 `F:\AI\Zcode\zcode-prompt-enhance`（注入行指向此处） |
 | 仓库 | https://github.com/wjf1/zcode-prompt-enhance |
-| 目标宿主 | ZCode Desktop **3.17.1**（2026-10-29 升级），实际装于 `E:\ZCode`（`F:\software\Zcode` 已不存在） |
-| 当前状态 | **ZCode 升级 3.17.1 导致注入丢失，2026-10-30 15:27 已重新注入（PATCHED 核验通过），待完全退出 ZCode 重启生效** |
+| 目标宿主 | ZCode Desktop **3.17.2**（2026-11-02 升级），实际装于 `E:\ZCode`（`F:\software\Zcode` 已不存在） |
+| 当前状态 | **ZCode 升级 3.17.2 导致注入丢失，2026-11-02 13:41 已重新注入（双 marker + loadable 核验通过），待完全退出 ZCode 重启生效** |
 
 ### 0.3.0 相对 0.2.0 的一句话差异
 
@@ -26,19 +26,18 @@
 
 ### 当前注入状态
 
-**✅ 2026-10-30 15:27 已随 ZCode 3.17.1 重新注入，等待重启生效。**
+**✅ 2026-11-02 13:41 已随 ZCode 3.17.2 重新注入（双注入），等待重启生效。**
 
 ```
-实际运行位置：E:\ZCode\resources\app.asar（2026-10-29 21:04 随 3.17.1 升级被整份替换，374,627,566 字节）
-  __ZPE_PATCH__    ✅ true（本项目，2026-10-30 15:27 注入）
-  __ZUSAGE_PATCH__ ✅ true（状态栏项目，2026-10-30 同日随其后重新注入，~/.zcode/zcode-token-usage-statusbar）
-备份：E:\ZCode\resources\app.asar.bak-zpe-20261030152738（本项目注入前副本；含 .bak-20261030 等共 3 份轮转）
+实际运行位置：E:\ZCode\resources\app.asar（2026-11-02 14:51 随 3.17.2 升级被整份替换，374,653,670 字节）
+  __ZPE_PATCH__    ✅ true（本项目，2026-11-02 13:41 注入）
+  __ZUSAGE_PATCH__ ✅ true（状态栏项目，2026-11-02 同日随后重新注入）
+备份：E:\ZCode\resources\app.asar.bak-zpe-20261102134118（3.17.2 本项目注入前副本）
 注入行：2 行（本项目 + 状态栏），check-asar-loadable ALL PASS
 部署路径：F:\AI\Zcode\zcode-prompt-enhance = 开发路径（v0.3.2）
-  —— npm test 140/140、tools/preflight ALL PASS、tools/check-asar-loadable ALL PASS（3.17.1 asar 可加载）
+  —— npm test 171/171、tools/preflight ALL PASS、tools/check-asar-loadable ALL PASS（3.17.2 asar 可加载）
 
-历史：ZCode 每次升级都会整份替换 asar 导致注入丢失（已两次：迁移到 E:\ZCode、
-2026-10-29 升级 3.17.1）。2026-10-30 已重新注入，注入方式沿用运行中直接替换
+历史：ZCode 每次升级都会整份替换 asar 导致注入丢失（已两次：迁移到 E:\ZCode、2026-10-29 升级 3.17.1、2026-11-02 升级 3.17.2）。最近一次 2026-11-02 已重新注入。
 + 用户方便时重启的路径（10-26 实测安全）。
 ```
 
