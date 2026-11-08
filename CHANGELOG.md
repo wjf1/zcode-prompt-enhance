@@ -3,7 +3,7 @@
 本项目的所有重要变更记录于此。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [0.4.0] - 2026-11-08
 
 **非阻塞 P2/P3/P4 批次：上下文感知、构建期拆分、升级检测、/enhance 兜底。运行时注入路径行为不变
 （上下文默认关闭 = 与基线逐字节一致）。测试 140 → 171。**
