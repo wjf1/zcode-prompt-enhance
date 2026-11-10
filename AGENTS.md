@@ -5,7 +5,7 @@
 ZCode 桌面版聊天输入框提示词增强插件：在输入框旁注入 ✨ 按钮，一键把草稿改写成结构化提示词。
 实现方式为 asar 注入（`repatch_asar.mjs` 重打包宿主 `app.asar`），主进程链路（`inject-main.cjs` + `core/*.mjs`）
 经本地 HTTP 桥与渲染端浮层（`overlay-prompt-enhance.js`）协同；另提供 `commands/enhance.md` + `skills/enhance`
-作为注入失效期的 `/enhance` 对话兜底。当前版本 **v0.5.0**（2026-11-09），测试 217 项全绿。
+作为注入失效期的 `/enhance` 对话兜底。当前版本 **v0.5.0**（2026-11-09），测试 218 项全绿。
 
 ## 构建与测试命令
 

@@ -230,7 +230,7 @@ WorkBuddy 侧原始材料（供后续复核，路径固定）：
 | 浮层 UI | ✨ 旁档位切换按钮（文字可见、localStorage 持久化、进行中禁切换）；警告 / 错误 / 恢复正常渲染 | `overlay-prompt-enhance.js` |
 
 **验证数据**：
-- `npm test`：**217 项全绿**（171 → 217，新增 quality 19 项、prompt 19 项、enhancer 8 项）。
+- `npm test`：**218 项全绿**（171 → 218，新增 quality 19 项、prompt 19 项、enhancer 8 项、CLI 空白草稿回归 1 项）。
 - `npm run build:overlay -- --check`：产物同步。
 - `tools/check-core-url.mjs`：八模块全 OK（新增 prompt / quality）。
 - `tools/sim-overlay.mjs`：ALL PASS（12 组）。

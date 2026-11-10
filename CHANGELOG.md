@@ -6,7 +6,7 @@
 ## [0.5.0] - 2026-11-09
 
 **对标 WorkBuddy 提示词增强：强化改写质量约束、新增输出质量判定、强度分级与场景模板路由。
-默认配置下请求行为不变（standard + general = 与 0.4.0 提示词逐字节一致）。测试 171 → 217。**
+默认配置下请求行为不变（standard + general = 与 0.4.0 提示词逐字节一致）。测试 171 → 218。**
 
 本次对标的原始材料是 WorkBuddy 客户端 `app.asar` 内的实现（`main/server.js` 的
 `handleEnhancePrompt` 双段提示词 + `registerEnhancePromptHandlers` 调用链，渲染端
@@ -52,6 +52,11 @@
 ### 修复
 
 - `normalizeOptions(null)` 会因显式传 `null`（默认参数不生效）而抛错，现统一兜底为默认值。
+- **`/enhance` 兜底 CLI 的全空白草稿会发出真实网络请求**：空值判定只用 `charCount === 0`，
+  `"   \n\t"` 被当成合法草稿继续往下走 —— 本机上真的发了一次请求、直到模型层才报"草稿为空"，
+  白烧一次额度；CI 上没有 `provider_config.json`，则先撞 `unsupported`，把真实原因盖掉
+  （表现为本地绿、CI 红的环境依赖缺陷）。现改为与 `core/enhancer.mjs` 一致的 `trim()` 后判空，
+  且空值判定前置到配置检查之前。新增回归锚点断言 stderr 不含"增强中"与"未找到 provider 配置"。
 
 ### 有意不做
 
