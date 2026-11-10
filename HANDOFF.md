@@ -1,8 +1,8 @@
 # HANDOFF.md — 接力开发文档
 
 > 项目：zcode-prompt-enhance（ZCode 提示词增强）
-> 当前阶段：**v0.4.0 已定版发布：P2/P3/P4 非阻塞批次（上下文感知、构建期拆分、升级检测、/enhance 兜底），见 §4.0.3**
-> 最后更新：2026-11-08
+> 当前阶段：**v0.5.0 已定版：对标 WorkBuddy 的提示词强化（实质增强 / 输出完整性 / WHAT 约束）、输出质量判定、强度分级与场景路由，见 §4.0.4**
+> 最后更新：2026-11-09
 
 ---
 
@@ -11,7 +11,7 @@
 | 项 | 值 |
 |---|---|
 | 项目定位 | ZCode Desktop 输入框旁 ✨ 一键增强提示词，原地回填 + 撤销 + diff |
-| 版本 | `0.3.2` |
+| 版本 | `0.5.0` |
 | 位置 | 开发与部署统一在 `F:\AI\Zcode\zcode-prompt-enhance`（注入行指向此处） |
 | 仓库 | https://github.com/wjf1/zcode-prompt-enhance |
 | 目标宿主 | ZCode Desktop **3.17.2**（2026-11-02 升级），实际装于 `E:\ZCode`（`F:\software\Zcode` 已不存在） |
@@ -191,6 +191,62 @@ F:\AI\Zcode\zcode-prompt-enhance\
 ---
 
 ## 4. 最近一轮变更与交付成果
+
+### 4.0.4 v0.5.0（2026-11-09）：对标 WorkBuddy 的提示词与质量强化
+
+**背景**：用户指出本项目的提示词增强与 WorkBuddy 差距较大，要求对标优化。本次把 WorkBuddy
+客户端 `app.asar` 的实现完整还原后逐项比对（见下表），确认差距不在交互与工程防御，
+而在**改写质量的硬性约束**与**输出缺陷的可观测性**，因此只补这两块，不动已领先的部分。
+
+WorkBuddy 侧原始材料（供后续复核，路径固定）：
+
+| 位置 | 内容 |
+|---|---|
+| `E:\workbuddy\resources\app.asar` → `main/server.js` | `Jr`（系统段）/ `Yr`（用户段 `{input}` 模板）双提示词、`renderUserPrompt`、`stripWrappingQuotes`、`handleEnhancePrompt`（sidecar 端点 → `CliPulseClient.runAgent` → 返回 `{success,text,code}`）、`registerEnhancePromptHandlers`（`llm:enhancePrompt` 通道） |
+| 同上 → `renderer/assets/contexts-*.js` | `useEnhancePrompt` 状态机：`makeHandleTriggerEnhance` / `Cancel` / `Revert` / `ContentDiverged` / `Ack`，`pendingApply` 序号防竞态 |
+| 同上 → `renderer/assets/src-*.js` | `EnhanceButton` 三态（转圈→可点取消；有 backup 时变 `↺` 恢复）、`handleEnhancePrompt`（重入前先 abort 旧请求） |
+| 同上 → `renderer/assets/i18n-*.js` | 文案基线：`input.enhance.title` / `enhancing` / `revert` |
+
+**能力对照结论**（本项目 vs WorkBuddy）：
+
+| 维度 | 本项目 | WorkBuddy | 判定 |
+|---|---|---|---|
+| 交互范式 | 原地回填 + 8 层撤销 + token diff | 原地回填 + 恢复原文 | 本项目略胜（撤销栈与 diff） |
+| 工程防御 | 三闸门、SSE 超时 `iterator.return()`、模型跟随 + 回落可见 | sidecar 托管，无闸门 | 本项目领先 |
+| 改写硬约束 | 本次补齐（实质增强 / 输出完整性 / WHAT-not-HOW / 三语示例） | 有，但无"不得为制造差异引入新需求"护栏 | 本次追平并加护栏 |
+| 输出缺陷可观测性 | 本次新增 `not-changed` / `truncated` / `shrunk` | 只有 success/code 二值 | 本项目领先 |
+| 强度分级 | 本次新增 standard / deep | 无 | 本项目领先 |
+| 场景化 | 本次新增 code / data / doc 路由 | 无（单一通用提示词） | 本项目领先 |
+
+**本轮交付**：
+
+| 项 | 内容 | 关键文件 |
+|---|---|---|
+| 提示词强化 | 新增 4 条硬约束（实质增强、输出收尾完整、扩展而非回答、WHAT-not-HOW/不指定技术栈/不加教程）+ 实质增强的护栏条款；BAD/GOOD 示例扩为中文/英文/混排三组 | `core/prompt.mjs`、`test/prompt.test.mjs`（+19 项） |
+| 输出质量判定 | `checkUnchanged` / `checkTruncated` / `checkShrunk` / `assessQuality` 四个纯函数；接入 `enhanceDraft` 清洗后；阻断抛错、警告回传 | `core/quality.mjs`、`test/quality.test.mjs`（19 项） |
+| 强度分级 | `INTENSITIES` + `INTENSITY_ADDITION`；deep 档追加边界条件/失败处理/可核验验收，并声明"深度不是堆砌" | `core/prompt.mjs` |
+| 场景路由 | `classifyScene` 按信号命中数判定，优先级 code > data > doc，无信号回落 general；只改步骤段与验收段措辞 | `core/prompt.mjs`、`inject-main.cjs` |
+| 主进程接线 | 解析 `payload.intensity` / `scene` → `normalizeOptions` → 传入 `enhanceDraft`；`done` 帧回传实际生效档位与 warnings | `inject-main.cjs` |
+| 浮层 UI | ✨ 旁档位切换按钮（文字可见、localStorage 持久化、进行中禁切换）；警告 / 错误 / 恢复正常渲染 | `overlay-prompt-enhance.js` |
+
+**验证数据**：
+- `npm test`：**217 项全绿**（171 → 217，新增 quality 19 项、prompt 19 项、enhancer 8 项）。
+- `npm run build:overlay -- --check`：产物同步。
+- `tools/check-core-url.mjs`：八模块全 OK（新增 prompt / quality）。
+- `tools/sim-overlay.mjs`：ALL PASS（12 组）。
+- **真实模型 e2e**（`new-provider-4 / cn:deepseek-v4.1-flash`）：中英两例均正常返回、语言一致、
+  质量判定零误报；对"已清晰的草稿"（`请解释 React useEffect 和 useLayoutEffect 的区别`）
+  实测 standard 与 deep 都产生实质增强（deep 输出 857 字 vs standard 约 365 字，结构更细）。
+- **真实浏览器点击走查**（chrome-devtools + 带 mock Lexical 的 harness 页）：档位切换与持久化、
+  ✨ 点击 → 请求体带 `intensity: deep` → 写回草稿 → 撤销栈 +1 → diff 卡显示、↺ 撤销回退、
+  缩水警告 toast、`truncated` 错误态（按钮转红 + 中文原因 + 重试提示）全部通过。
+  走查中先踩到一次 `no-lexical-api` 假失败，确认是 harness 缺 Lexical 实例所致，补 mock 后即通过 ——
+  不是代码缺陷。
+
+**本轮踩坑**：`overlay-prompt-enhance.js` 是 CRLF、我新写的 `core/quality.mjs` 是 LF。
+改 overlay 后 `build:overlay --check` 报"产物过期"，实际是我插入的行改变了行尾，
+重跑 `npm run build:overlay` 即同步 —— 但要注意：**该文件行尾不统一时 diff 与产物校验会互相干扰**，
+改动大段代码后先跑 `build:overlay` 再 `--check`，不要只跑 `--check` 就下结论。
 
 ### 4.0-next（Unreleased，2026-10-31）：非阻塞 P2/P3/P4 批次
 
@@ -484,7 +540,10 @@ verdictNew: PASS  ← 修复后判据（只看 editor state）
 |---|---|---|
 | P0 | ~~0.3.x 真机重启验证~~ **已全部闭环（2026-10-31）** | 0.3.1 已确认在跑（见 §5.1.1）。anchorVia、取消复验、工具行占满三项走查**全部真机/双覆盖闭环**，无剩余 |
 | P1 | ~~真实点击走查~~ **已完成（2026-10-31）** | `tools/sim-overlay.mjs` 覆盖撤销/Esc/浅色/diff 卡位置 + 新增 [12] 占满隐藏；真机完成按钮存在、anchorVia、取消复验、极限宽度布局 |
+| P1 | ~~对标 WorkBuddy 提示词强化~~ **已完成（2026-11-09，v0.5.0）** | 提示词 4 条硬约束 + 三语示例、`core/quality.mjs` 三类判定、强度分级、场景路由、浮层档位切换。见 §4.0.4。真实模型 e2e 与真实浏览器点击走查均通过 |
 | P2 | ~~上下文感知~~ **已完成（2026-10-31，Unreleased）** | `core/context.mjs` 装配（从新到旧、双预算、角色白名单、保尾截断）+ `inject-main.cjs` 按 `context_enabled` 门控接线，默认关闭 = 与基线逐字节一致。剩余子项：渲染端上下文采集依赖宿主聊天记录 DOM（无稳定选择器），待宿主能力，主进程链路已就绪 |
+| P2 | 场景判定精度 | `classifyScene` 是关键词命中数判定，对混合草稿（如"给这个接口写文档"）已按 code 优先处理，但对"做一份数据分析报告要用到 SQL"这类双强信号仍可能选错。**改进方向**：把场景作为可选覆盖项暴露给用户（浮层二次点击长按切换），而非继续加强正则。当前 `scene` 配置项已可人工覆盖 |
+| P2 | 质量判定阈值标定 | `shrunk` 的 60% 阈值与 40 字下限、`truncated` 的末行 3 字阈值都是经验值，只在 deepseek-v4.1-flash 上实测过（零误报）。**换模型或换领域后应重跑 `tools/e2e-model.mjs` 复核**；阈值集中在 `core/quality.mjs` 顶部常量区，调整不需动逻辑 |
 | P2 | 流式预览 | **有意不做（2026-10-31 裁决）**。理由：① 预览必须周期性 `setEditorState` 整体替换编辑器状态，用户在两次预览之间的键入会被下一次写入覆盖（不可控竞态）；② overlay 既有安全设计「请求期间二次读草稿比对、改过即放弃结果」会被流式写入常态化击穿或被迫拆除；③ 撤销栈被半成品污染；④ 任务书方案未含"草稿区只读锁定"，宿主也无此能力。现状已有等价观测：progress 经 NDJSON 实时回推到按钮 tooltip/aria-label。**待宿主提供草稿只读锁定能力后再评估** |
 | P2 | 插件化双轨 | 用官方 hooks 做「提交时增强」兜底（`UserPromptSubmit` 只有 `additionalContext`，无法原地回填）。任务书 §5.B。**等外部依赖**：ZCode 官方 hooks 能力 |
 | P2 | ~~构建期拆分~~ **已完成（2026-10-31，Unreleased）** | `core/diff.mjs` 为单一事实源（新增 `computeDiff` 导出），overlay 内嵌块由 `tools/build-overlay.mjs` 构建期生成（`npm run build:overlay`，`--check` 校验）；`test/overlay-diff.test.mjs` 降级为行为级产物校验 |

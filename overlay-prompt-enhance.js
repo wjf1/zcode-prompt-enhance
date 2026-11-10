@@ -51,6 +51,9 @@
     timeout: "请求超时",
     aborted: "已取消",
     "too-long": "草稿过长，请精简后重试",
+    "not-changed": "模型没有产生实质改动，请重试",
+    truncated: "输出不完整（结尾被截断），请重试",
+    shrunk: "增强结果比原文更简短，可能丢失信息",
     unsupported: "当前没有可用的增强模型配置",
     internal: "增强失败，请稍后重试",
     forbidden: "桥接鉴权失败",
@@ -315,6 +318,30 @@
     };
   }
 
+  /* ---------------- 增强强度 ---------------- */
+  var INTENSITY_KEY = "zpe-intensity-v1";
+  var INTENSITIES = ["standard", "deep"];
+
+  /** 读持久化的强度档位；localStorage 不可用（隐私模式/配额满）时静默回落 standard。 */
+  function readIntensity() {
+    try {
+      var v = localStorage.getItem(INTENSITY_KEY);
+      if (INTENSITIES.indexOf(v) >= 0) return v;
+    } catch (e) {}
+    return "standard";
+  }
+
+  /** 写持久化强度档位。写失败不影响功能，只是下次不记住。 */
+  function saveIntensity(v) {
+    try {
+      localStorage.setItem(INTENSITY_KEY, v);
+    } catch (e) {}
+  }
+
+  function intensityLabel(v) {
+    return v === "deep" ? "深度" : "标准";
+  }
+
   /* ---------------- 状态 ---------------- */
   var state = {
     phase: "idle", // idle | busy | error
@@ -336,6 +363,10 @@
     lastCloseBtn: null, // diff 卡关闭按钮引用（关闭后还焦到 ⇄）
     placeError: "", // 最近一次 place() 异常
     placeErrorLogged: false, // 是否已把 place 异常打到控制台（只打首次）
+    /* 增强强度：standard = 精度优先，deep = 显式补齐边界条件与验收。
+     * 持久化在本机 localStorage，跨会话记住用户选择。 */
+    intensity: readIntensity(),
+    warnings: [], // 最近一次增强的非阻断质量警告
   };
   var abortCtl = null;
   var rafId = 0;
@@ -389,6 +420,17 @@
   undoBtn.textContent = "↺";
   undoBtn.style.display = "none";
 
+  /* 强度切换：单击在「标准 / 深度」间切换，当前档位直接写在按钮上（不靠 tooltip），
+   * 因为 tooltip 只有 hover 才可见，而档位是本次请求生效的关键前提。 */
+  var intensityBtn = el("button");
+  intensityBtn.id = "zpe-intensity";
+  intensityBtn.type = "button";
+  intensityBtn.style.cssText = btn.style.cssText;
+  intensityBtn.style.width = "auto";
+  intensityBtn.style.padding = "0 6px";
+  intensityBtn.style.fontSize = "11px";
+  intensityBtn.style.letterSpacing = ".02em";
+
   var diffBtn = el("button");
   diffBtn.id = "zpe-diffbtn";
   diffBtn.type = "button";
@@ -399,6 +441,7 @@
   diffBtn.style.display = "none";
 
   wrap.appendChild(btn);
+  wrap.appendChild(intensityBtn);
   wrap.appendChild(undoBtn);
   wrap.appendChild(diffBtn);
 
@@ -590,6 +633,19 @@
     undoBtn.title = undoTip;
     undoBtn.setAttribute("aria-label", undoTip);
     diffBtn.style.display = state.diff ? "inline-flex" : "none";
+
+    /* 强度按钮：档位文字直接可见，避免"选了什么档"只能靠 hover 才知道。
+     * 增强进行中禁用切换 —— 否则用户会以为能改变正在跑的这一轮。 */
+    intensityBtn.textContent = intensityLabel(state.intensity);
+    intensityBtn.title =
+      state.intensity === "deep"
+        ? "当前：深度（补齐边界条件与验收标准）— 点击切回标准"
+        : "当前：标准（精度优先）— 点击切到深度";
+    intensityBtn.setAttribute("aria-label", intensityBtn.title);
+    intensityBtn.style.opacity = busy ? ".35" : ".75";
+    intensityBtn.style.cursor = busy ? "not-allowed" : "pointer";
+    intensityBtn.setAttribute("aria-disabled", busy ? "true" : "false");
+
     syncDiffExpanded();
   }
 
@@ -997,6 +1053,7 @@
         body: JSON.stringify({
           draft: draft,
           context: readContext(),
+          intensity: state.intensity,
           // 实时跟随会话模型：把工具行模型按钮的标签交给主进程反查路由。
           // 取不到时传空串，主进程会回落到 config.json 的默认模型。
           sessionModelLabel: currentModelLabel(),
@@ -1070,7 +1127,12 @@
       model: final.model || "",
       providerName: final.providerName || "",
       source: final.routeSource || "",
+      // 主进程实际生效的档位与场景（场景可能由草稿自动判定）
+      intensity: final.intensity || "",
+      scene: final.scene || "",
     };
+    // 非阻断质量警告：随成功结果回传，由调用方决定怎么温和提示
+    state.warnings = Array.isArray(final.warnings) ? final.warnings : [];
     return final.text;
   }
 
@@ -1110,9 +1172,12 @@
         showToast(errText("draft-changed"));
         return;
       }
-      if (norm(result) === "" || norm(result) === norm(source)) {
+      /* 空结果与"未实质改动"都由主进程 core/quality.mjs 统一判定并走错误码通道
+       * （not-changed / truncated / shrunk）。这里只保留最后一道空值兜底：
+       * 判定逻辑留在 core 一处，避免渲染端与主进程两套阈值各说各话。 */
+      if (norm(result) === "") {
         setPhase("error", "empty");
-        showToast("模型没有产生改动");
+        showToast(errText("empty"));
         return;
       }
 
@@ -1141,16 +1206,22 @@
       setPhase("idle");
       renderButtons();
       if (state.diff) openDiff();
-      // 让用户能确认"这次增强用的到底是哪个模型"：跟随成功时就是会话模型
-      if (usedRoute && usedRoute.model) {
+      /* 提示优先级：质量警告 > 路由说明 > 档位说明。
+       * 缩水警告比"用了哪个模型"更需要用户看一眼，所以先报。 */
+      if (state.warnings && state.warnings.length) {
+        var w = state.warnings[0];
+        showToast(errText(w.code || "shrunk"), 4200);
+      } else if (usedRoute && usedRoute.model) {
+        // 让用户能确认"这次增强用的到底是哪个模型"：跟随成功时就是会话模型
         var msg;
+        var deep = usedRoute.intensity === "deep" ? "（深度）" : "";
         if (usedRoute.source === "follow-session") {
-          msg = "已按会话模型增强：" + usedRoute.model;
+          msg = "已按会话模型增强" + deep + "：" + usedRoute.model;
         } else if (usedRoute.source === "fallback-after-follow") {
           // 跟随的模型不可用（额度/网络），自动换了默认模型 —— 必须告知，不能静默
-          msg = "会话模型不可用，已改用 " + usedRoute.model;
+          msg = "会话模型不可用，已改用" + deep + " " + usedRoute.model;
         } else {
-          msg = "已用默认模型增强：" + usedRoute.model;
+          msg = "已用默认模型增强" + deep + "：" + usedRoute.model;
         }
         showToast(msg, usedRoute.source === "fallback-after-follow" ? 4200 : 2400);
       }
@@ -1530,6 +1601,22 @@
     doUndo();
   });
 
+  intensityBtn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    // 进行中不允许切换：否则用户会以为能改变正在跑的这一次
+    if (state.phase === "busy") return;
+    state.intensity = state.intensity === "deep" ? "standard" : "deep";
+    saveIntensity(state.intensity);
+    renderButtons();
+    showToast(
+      state.intensity === "deep"
+        ? "已切到深度：会补齐边界条件与验收标准"
+        : "已切到标准：精度优先，输出更紧凑",
+      2400
+    );
+  });
+
   diffBtn.addEventListener("click", function (e) {
     e.preventDefault();
     e.stopPropagation();
@@ -1554,6 +1641,15 @@
   undoBtn.addEventListener("mouseleave", function () {
     undoBtn.style.background = "transparent";
     undoBtn.style.opacity = ".75";
+  });
+  intensityBtn.addEventListener("mouseenter", function () {
+    if (state.phase === "busy") return;
+    intensityBtn.style.opacity = "1";
+    intensityBtn.style.background = "rgba(128,128,128,.16)";
+  });
+  intensityBtn.addEventListener("mouseleave", function () {
+    intensityBtn.style.background = "transparent";
+    renderButtons();
   });
   diffBtn.addEventListener("mouseenter", function () {
     diffBtn.style.opacity = "1";
@@ -1637,6 +1733,8 @@
       // 实时跟随相关：会话模型标签（读 DOM 得到）与上一次实际使用的路由
       sessionModelLabel: currentModelLabel(),
       usedRoute: usedRoute || null,
+      intensity: state.intensity,
+      warnings: state.warnings || [],
       restartNeeded: !!state.restartNeeded,
       wrapRect: (function () {
         var r = wrap.getBoundingClientRect();

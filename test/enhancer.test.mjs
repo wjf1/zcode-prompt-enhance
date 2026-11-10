@@ -245,3 +245,105 @@ test("describeError 未知码回落 internal", () => {
   assert.equal(describeError("timeout").retryable, true);
   assert.equal(describeError("auth").retryable, false);
 });
+
+/* ---------------- v0.5.0：强度/场景透传与质量判定 ---------------- */
+
+test("强度与场景透传到 system prompt", async () => {
+  let captured = null;
+  await enhanceDraft({
+    route: ROUTE,
+    draft: "帮我修一个 bug 的代码，函数返回 undefined",
+    intensity: "deep",
+    // 场景由主进程（inject-main.cjs）按草稿判定后显式传入，enhancer 只负责拼装
+    scene: "code",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return sseResponse(textEvents(["请定位并修复该函数返回 undefined 的问题，并补充覆盖空输入与越界输入的测试"]));
+    },
+  });
+  assert.ok(/Depth setting: deep/.test(captured.system), "deep 档必须进 system prompt");
+  assert.ok(/Scene setting: code work/.test(captured.system), "传 scene=code 时必须追加代码场景段");
+});
+
+test("默认参数下 system prompt 不含任何档位段", async () => {
+  let captured = null;
+  await enhanceDraft({
+    route: ROUTE,
+    draft: "帮我写个排序函数",
+    fetchImpl: async (url, init) => {
+      captured = JSON.parse(init.body);
+      return sseResponse(textEvents(["请实现一个稳定的排序函数，接收数组并返回升序结果"]));
+    },
+  });
+  assert.ok(!/Depth setting/.test(captured.system));
+  assert.ok(!/Scene setting/.test(captured.system));
+});
+
+test("质量判定：模型原样返回时抛 not-changed", async () => {
+  const draft = "帮我写个排序函数";
+  await assert.rejects(
+    () =>
+      enhanceDraft({
+        route: ROUTE,
+        draft,
+        fetchImpl: async () => sseResponse(textEvents([draft])),
+      }),
+    (e) => e instanceof EnhanceError && e.code === "not-changed"
+  );
+});
+
+test("质量判定：输出停在冒号时抛 truncated", async () => {
+  await assert.rejects(
+    () =>
+      enhanceDraft({
+        route: ROUTE,
+        draft: "帮我写个排序函数",
+        fetchImpl: async () => sseResponse(textEvents(["请实现一个稳定的排序函数，要求如下："])),
+      }),
+    (e) => e instanceof EnhanceError && e.code === "truncated"
+  );
+});
+
+test("质量判定：缩水只作为警告随成功结果回传", async () => {
+  const draft =
+    "请帮我写一个函数，这个函数需要接收一个数组作为输入，返回排序后的结果，要求稳定排序，并且要处理空数组和单元素数组的边界情况，性能上希望是 O(n log n)";
+  const out = await enhanceDraft({
+    route: ROUTE,
+    draft,
+    fetchImpl: async () => sseResponse(textEvents(["写个排序函数"])),
+  });
+  assert.equal(out.text, "写个排序函数");
+  assert.equal(out.warnings.length, 1);
+  assert.equal(out.warnings[0].code, "shrunk");
+});
+
+test("质量判定可关闭：qualityCheck=false 时不拦未改动", async () => {
+  const draft = "帮我写个排序函数";
+  const out = await enhanceDraft({
+    route: ROUTE,
+    draft,
+    qualityCheck: false,
+    fetchImpl: async () => sseResponse(textEvents([draft])),
+  });
+  assert.equal(out.text, draft);
+});
+
+test("正常增强结果不被质量判定误杀", async () => {
+  const out = await enhanceDraft({
+    route: ROUTE,
+    draft: "帮我写个排序函数",
+    fetchImpl: async () =>
+      sseResponse(textEvents(["请实现一个稳定的排序函数，接收数组并返回升序结果，同时处理空数组与单元素数组的边界情况"])),
+  });
+  assert.ok(out.text.includes("稳定"));
+  assert.equal(out.warnings ?? null, null, "正常结果不应带警告");
+});
+
+test("新增质量错误码都可重试，且带中文文案", () => {
+  for (const code of ["not-changed", "truncated", "shrunk"]) {
+    const d = describeError(code);
+    assert.equal(d.code, code);
+    assert.equal(d.retryable, true, `${code} 应为可重试（换个采样可能就好了）`);
+    assert.ok(d.zh.length > 0, `${code} 必须有中文文案`);
+  }
+});

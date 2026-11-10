@@ -39,6 +39,11 @@ const DEFAULTS = {
   context_enabled: false,
   context_max_messages: 8,
   context_max_chars: 4000,
+  // 默认强度与场景。deep 更详尽、general 不加场景段（= 旧版行为）
+  intensity: "standard",
+  scene: "general",
+  // 场景自动判定开关：开启后按草稿特征路由 code/data/doc，判定不出就回落 scene
+  scene_auto: true,
   // 空数组 = 只信任本地打包协议（file:/app:/chrome-extension:/devtools:）
   allowed_window_hosts: [],
 };
@@ -66,13 +71,14 @@ let coreMod = null;
 function loadCore() {
   if (!corePromise) {
     corePromise = (async () => {
-      const [provider, enhancer, gates, context] = await Promise.all([
+      const [provider, enhancer, gates, context, prompt] = await Promise.all([
         import(pathToFileUrl(path.join(HERE, "core", "provider.mjs"))),
         import(pathToFileUrl(path.join(HERE, "core", "enhancer.mjs"))),
         import(pathToFileUrl(path.join(HERE, "core", "gates.mjs"))),
         import(pathToFileUrl(path.join(HERE, "core", "context.mjs"))),
+        import(pathToFileUrl(path.join(HERE, "core", "prompt.mjs"))),
       ]);
-      coreMod = { provider, enhancer, gates, context };
+      coreMod = { provider, enhancer, gates, context, prompt };
       return coreMod;
     })().catch((e) => {
       corePromise = null;
@@ -273,6 +279,20 @@ function startBridge() {
         })
       : undefined;
 
+    /* 强度与场景：
+     *  - intensity 优先取请求体（浮层按钮切换），非法值由 normalizeOptions 回落 standard；
+     *  - scene 在 scene_auto 开启时按草稿特征判定（core/prompt.mjs 的 classifyScene），
+     *    判不出信号就回落到配置里的 scene（默认 general，等同旧版不做场景增强）。
+     * 两者都只影响 system prompt 拼装，不改变请求协议。 */
+    const { prompt: promptMod } = await loadCore();
+    const reqIntensity = typeof payload?.intensity === "string" ? payload.intensity : "";
+    const reqScene = typeof payload?.scene === "string" ? payload.scene : "";
+    const opts = promptMod.normalizeOptions({
+      intensity: reqIntensity || c.intensity,
+      scene: reqScene || (c.scene_auto ? promptMod.classifyScene(draft, c.scene) : c.scene),
+    });
+    LOG("enhance opts:", opts.intensity + "/" + opts.scene);
+
     const release = gates.acquire();
     const callerAbort = new AbortController();
     let callerAborted = false;
@@ -299,6 +319,8 @@ function startBridge() {
           route: rt,
           draft,
           context,
+          intensity: opts.intensity,
+          scene: opts.scene,
           signal: callerAbort.signal,
           timeoutMs: c.timeout_ms,
           onProgress: (text) => {
@@ -348,6 +370,11 @@ function startBridge() {
           model: finalRoute.model,
           providerName: finalRoute.providerName,
           routeSource: finalSource,
+          // 实际生效的强度/场景，供浮层显示"这次用的是哪档"并排查场景误判
+          intensity: opts.intensity,
+          scene: opts.scene,
+          // 非阻断性质量问题（如信息量缩水），浮层据此给一条温和提示
+          warnings: Array.isArray(result.warnings) ? result.warnings : [],
         }) + "\n"
       );
       res.end();

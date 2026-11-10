@@ -15,24 +15,66 @@ English | [简体中文](README.md)
 ┌─────────────────────────────────────────────────┐
 │  Composer (what you typed)                      │
 │                                                 │
-│  [📎] [✨]↺⇄      [context] [model ▾] [send]    │  ← ✨ sits in the toolbar, left of the model picker
+│  [📎] [✨][std]↺⇄  [context] [model ▾] [send]   │  ← ✨ sits in the toolbar, left of the model picker
 └─────────────────────────────────────────────────┘
 ```
 
 - **Click ✨** → the draft is rewritten in place. No dialog, no auto-send.
 - **Click ↺** → restore the previous version (8-level undo stack).
 - **Click ⇄** → open the diff card, marking every addition and deletion.
+- **Click [std] / [deep]** → switch enhancement depth; the choice is remembered.
 - **Click ✨ again while running** → cancel; the draft stays byte-for-byte unchanged.
 - **On failure** → the button turns red, hover shows the reason; click again to retry.
+
+### Enhancement depth
+
+| Level | Bias | Good for |
+|---|---|---|
+| **Standard** (default) | Precision first — stop as soon as the request is unambiguous | Everyday prompts, quick rewrites |
+| **Deep** | Spell out boundary conditions, failure handling, and checkable acceptance | Complex tasks, requirements handed to someone else |
+
+Deep is not "longer text": the prompt explicitly asks for more structure and precision, and keeps
+the `(TBD: …)` placeholder rule — unknown details are still not invented.
+
+### Scene templates
+
+Drafts are routed to a **code / data / doc** template by their signals. Only the wording of the
+*steps* and *acceptance* sections changes; the six-part skeleton stays intact. When no signal is
+found, the generic template is used (identical to no scene enhancement at all).
+Pin a scene with `scene` in `config.json`, or turn the routing off with `scene_auto: false`.
 
 ### Rewrite strategy
 
 The model fills a six-part skeleton: role and goal, context and constraints, steps, output format,
-acceptance criteria, boundary conditions. Three hard rules keep the result usable:
+acceptance criteria, boundary conditions.
+
+Three hard rules keep the result usable:
 
 1. **Never fabricate.** Unknown but needed details become `(TBD: …)` placeholders instead of invented facts.
 2. **Match the language.** Chinese in → Chinese prompt, English in → English prompt, mixed stays mixed.
 3. **Keep the scope.** Do not widen, narrow, or redirect the task.
+
+Plus three practical clauses matched against WorkBuddy:
+
+4. **Always improve substantively.** Even a clear draft gets its scope made exact, its deliverable
+   named, its acceptance turned checkable — never returned unchanged, never "polished" by wording
+   only. Bounded by: the improvement must not import requirements the original never had.
+5. **End on a complete statement.** No unfinished list items, dangling conjunctions, or trailing colons.
+6. **Expand the request, do not answer it.** Describe WHAT the result must be, not HOW to build it;
+   never prescribe technologies the prompt did not name; no unsolicited tutorials.
+
+### Output quality checks
+
+If a result is structurally broken, you are told instead of having it silently written back:
+
+| Situation | Behaviour |
+|---|---|
+| The model changed nothing of substance | Button turns red: "no substantive change, please retry" |
+| Output stops mid-sentence (dangling conjunction / colon / unfinished list item) | "Output incomplete (truncated at the end), please retry" |
+| Result is clearly shorter than the original (under 60%) | Written back normally, with a gentle warning |
+
+The first two are blocked outright (your draft is never damaged); the third only warns — shorter
+can still be correct.
 
 ---
 

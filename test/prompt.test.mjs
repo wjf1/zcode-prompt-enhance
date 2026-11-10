@@ -7,6 +7,9 @@ import {
   buildSystemPrompt,
   countChars,
   MAX_INPUT_CHARS,
+  BAD_GOOD_EXAMPLES,
+  classifyScene,
+  normalizeOptions,
 } from "../core/prompt.mjs";
 
 test("system prompt 包含六段式骨架", () => {
@@ -104,4 +107,133 @@ test("countChars 按 code point 计数", () => {
 
 test("输入上限是 12000", () => {
   assert.equal(MAX_INPUT_CHARS, 12000);
+});
+
+/* ---------------- v0.5.0：对标 WorkBuddy 的提示词强化 ---------------- */
+
+test("system prompt 含 WorkBuddy 式实质增强要求", () => {
+  assert.ok(
+    SYSTEM_PROMPT.includes("Always deliver a substantive improvement"),
+    "必须有'必须实质增强'的硬约束，否则清晰草稿上点 ✨ 会没有任何变化"
+  );
+  assert.ok(
+    /Never return it unchanged in substance/.test(SYSTEM_PROMPT),
+    "必须显式禁止'原样返回'"
+  );
+});
+
+test("实质增强同时带护栏：不得引入新需求", () => {
+  assert.ok(
+    /do not import new requirements to manufacture a difference/i.test(SYSTEM_PROMPT),
+    "必须防止为了'看起来改过'而编造需求"
+  );
+  assert.ok(SYSTEM_PROMPT.includes("(待补充：…)"), "防臆造占位符仍在");
+});
+
+test("system prompt 要求输出收尾完整", () => {
+  assert.ok(
+    /unfinished list item/.test(SYSTEM_PROMPT),
+    "必须禁止以未完成的列表项结尾"
+  );
+  assert.ok(/trailing colon or comma/.test(SYSTEM_PROMPT), "必须禁止以冒号/逗号收尾");
+  assert.ok(/dangling conjunction/.test(SYSTEM_PROMPT), "必须禁止以悬空连接词收尾");
+});
+
+test("system prompt 声明 WHAT 而非 HOW，且不替用户答题", () => {
+  assert.ok(/Describe WHAT the result must be, not HOW/.test(SYSTEM_PROMPT));
+  assert.ok(/do not answer it/i.test(SYSTEM_PROMPT), "必须声明'扩展请求而非回答请求'");
+  assert.ok(
+    /Never prescribe tools, libraries, frameworks/.test(SYSTEM_PROMPT),
+    "必须禁止擅自指定技术栈"
+  );
+});
+
+test("示例覆盖中文 / 英文 / 混排三种输入形态", () => {
+  assert.ok(BAD_GOOD_EXAMPLES.includes("GOOD OUTPUT EXAMPLE (Chinese)"));
+  assert.ok(BAD_GOOD_EXAMPLES.includes("GOOD OUTPUT EXAMPLE (English)"));
+  assert.ok(BAD_GOOD_EXAMPLES.includes("mixed input, mixed output"));
+  assert.ok(BAD_GOOD_EXAMPLES.includes("BAD OUTPUT EXAMPLE"));
+});
+
+/* ---------------- 强度档位 ---------------- */
+
+test("默认强度 standard 不改变基线提示词", () => {
+  assert.equal(buildSystemPrompt(false), SYSTEM_PROMPT);
+  assert.equal(buildSystemPrompt(false, { intensity: "standard", scene: "general" }), SYSTEM_PROMPT);
+});
+
+test("deep 档追加边界条件与验收要求", () => {
+  const s = buildSystemPrompt(false, { intensity: "deep" });
+  assert.ok(s.length > SYSTEM_PROMPT.length);
+  assert.ok(/Depth setting: deep/.test(s));
+  assert.ok(/boundary conditions/.test(s));
+  assert.ok(/placeholder/.test(s), "深度档也必须保留防臆造护栏");
+});
+
+test("deep 档强调'深度是结构不是废话'", () => {
+  const s = buildSystemPrompt(false, { intensity: "deep" });
+  assert.ok(/not more words of praise/.test(s));
+});
+
+test("非法强度值回落 standard", () => {
+  assert.equal(buildSystemPrompt(false, { intensity: "turbo" }), SYSTEM_PROMPT);
+  assert.equal(buildSystemPrompt(false, { intensity: 123 }), SYSTEM_PROMPT);
+  assert.equal(buildSystemPrompt(false, {}), SYSTEM_PROMPT);
+});
+
+/* ---------------- 场景路由 ---------------- */
+
+test("场景判定：代码草稿路由到 code", () => {
+  assert.equal(classifyScene("帮我修一下这个 bug，函数返回 undefined"), "code");
+  assert.equal(classifyScene("```js\nconst a = 1\n```"), "code");
+});
+
+test("场景判定：数据草稿路由到 data", () => {
+  assert.equal(classifyScene("帮我做一个 Excel 透视表，按字段汇总"), "data");
+});
+
+test("场景判定：文档草稿路由到 doc", () => {
+  assert.equal(classifyScene("帮我写一份需求说明文档的大纲"), "doc");
+});
+
+test("场景判定：无信号回落 general", () => {
+  assert.equal(classifyScene("我想做一个更有意思的东西"), "general");
+  assert.equal(classifyScene(""), "general");
+});
+
+test("场景判定：代码信号优先于文档信号", () => {
+  // "给这个接口写文档" 的产物是代码注释/接口说明，应走 code 而非 doc
+  assert.equal(classifyScene("给这个接口写文档，说明函数入参"), "code");
+});
+
+test("场景判定：可指定无信号时的回落场景", () => {
+  assert.equal(classifyScene("随便做点什么", "doc"), "doc");
+  assert.equal(classifyScene("随便做点什么", "bogus"), "general");
+});
+
+test("场景段只调整步骤与验收措辞，不改六段式骨架", () => {
+  const s = buildSystemPrompt(false, { scene: "code" });
+  for (const kw of ["Role and goal", "Context and constraints", "Steps", "Output format", "Acceptance criteria", "Boundary conditions"]) {
+    assert.ok(s.includes(kw), `场景增强后仍须保留六段式: ${kw}`);
+  }
+  assert.ok(/Scene setting: code work/.test(s));
+});
+
+test("general 场景不追加任何内容", () => {
+  assert.equal(buildSystemPrompt(false, { scene: "general" }), SYSTEM_PROMPT);
+});
+
+test("强度与场景可叠加，且上下文段仍在最后", () => {
+  const s = buildSystemPrompt(true, { intensity: "deep", scene: "code" });
+  assert.ok(/Scene setting: code work/.test(s));
+  assert.ok(/Depth setting: deep/.test(s));
+  assert.ok(/Conversation context/.test(s));
+  assert.ok(s.indexOf("Conversation context") > s.indexOf("Depth setting: deep"));
+});
+
+test("normalizeOptions 对脏值一律回落默认", () => {
+  assert.deepEqual(normalizeOptions({ intensity: "deep", scene: "data" }), { intensity: "deep", scene: "data" });
+  assert.deepEqual(normalizeOptions({ intensity: "x", scene: "y" }), { intensity: "standard", scene: "general" });
+  assert.deepEqual(normalizeOptions(), { intensity: "standard", scene: "general" });
+  assert.deepEqual(normalizeOptions(null), { intensity: "standard", scene: "general" });
 });
