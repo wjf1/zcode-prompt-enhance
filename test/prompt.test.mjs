@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   SYSTEM_PROMPT,
+  STRUCTURED_SYSTEM_PROMPT,
+  CONTEXT_SYSTEM_ADDITION,
   frameUserPrompt,
   cleanEnhancedText,
   buildSystemPrompt,
@@ -12,18 +14,120 @@ import {
   normalizeOptions,
 } from "../core/prompt.mjs";
 
-test("system prompt 包含六段式骨架", () => {
-  for (const kw of ["Role and goal", "Context and constraints", "Steps", "Output format", "Acceptance criteria", "Boundary conditions"]) {
-    assert.ok(SYSTEM_PROMPT.includes(kw), `missing section: ${kw}`);
+/* ---------------- 形态：标准档 = 紧凑改写（对标 WorkBuddy 实测输出） ---------------- */
+
+test("标准档是紧凑单段改写，不是规格书", () => {
+  assert.ok(SYSTEM_PROMPT.includes("ONE flowing prompt"), "单段形态指令缺失");
+  assert.ok(SYSTEM_PROMPT.includes("no section headers"), "必须禁止小节标题");
+  assert.ok(/2x-4x/.test(SYSTEM_PROMPT), "比例指引缺失");
+  assert.ok(SYSTEM_PROMPT.includes("800 characters"), "绝对上限缺失（WorkBuddy 对标项）");
+  assert.ok(!SYSTEM_PROMPT.includes("Rewriting strategy"), "标准档不得携带六段式骨架");
+  assert.ok(!SYSTEM_PROMPT.includes("(待补充：…)"), "标准档不得用占位块");
+});
+
+test("标准档用精确限定词内联未知信息（WorkBuddy 式）", () => {
+  assert.ok(SYSTEM_PROMPT.includes("precise qualifiers"), "限定词策略缺失");
+  assert.ok(
+    SYSTEM_PROMPT.includes("指定的其它同类项目"),
+    "要给出与 WorkBuddy 输出同款的限定词示例"
+  );
+});
+
+test("标准档保留用户既有列表形态（不强行摊平）", () => {
+  assert.ok(SYSTEM_PROMPT.includes("keep its list shape"));
+});
+
+test("共享硬约束两档都在", () => {
+  for (const kw of [
+    "Preserve the user's intent exactly",
+    "Never fabricate",
+    "Always deliver a substantive improvement",
+    "do not import new requirements to manufacture a difference",
+    "SAME language as the user's input",
+    "unfinished list item",
+    "dangling conjunction",
+    "Describe WHAT the result must be, not HOW",
+    "do not answer it",
+    "Never prescribe tools, libraries, frameworks",
+    "Output ONLY the rewritten prompt body",
+  ]) {
+    assert.ok(SYSTEM_PROMPT.includes(kw), `标准档缺: ${kw}`);
+    assert.ok(STRUCTURED_SYSTEM_PROMPT.includes(kw), `深度档缺: ${kw}`);
   }
 });
 
-test("system prompt 含关键硬约束", () => {
-  assert.ok(SYSTEM_PROMPT.includes("SAME language as the user's input"));
-  assert.ok(SYSTEM_PROMPT.includes("Never fabricate"));
-  assert.ok(SYSTEM_PROMPT.includes("(待补充：…)"));
-  assert.ok(SYSTEM_PROMPT.includes("Output ONLY the rewritten prompt body"));
+/* ---------------- 形态：深度档 = 六段式结构化骨架 ---------------- */
+
+test("深度档包含六段式骨架", () => {
+  for (const kw of ["Role and goal", "Context and constraints", "Steps", "Output format", "Acceptance criteria", "Boundary conditions"]) {
+    assert.ok(STRUCTURED_SYSTEM_PROMPT.includes(kw), `missing section: ${kw}`);
+  }
 });
+
+test("深度档保留防臆造占位符", () => {
+  assert.ok(STRUCTURED_SYSTEM_PROMPT.includes("(待补充：…)"));
+  assert.ok(STRUCTURED_SYSTEM_PROMPT.includes("(TBD: …)"));
+});
+
+test("深度档长度规则诚实化（3x-10x，替换从未生效的 1x-3x）", () => {
+  assert.ok(/3x-10x/.test(STRUCTURED_SYSTEM_PROMPT), "应写实测支撑的 3x-10x");
+  assert.ok(!/1x-3x/.test(STRUCTURED_SYSTEM_PROMPT), "1x-3x 实测被 15~90x 压倒，不得再写");
+  assert.ok(STRUCTURED_SYSTEM_PROMPT.includes("3000 characters"));
+});
+
+test("深度档不含紧凑形态指令（两形态互斥）", () => {
+  assert.ok(!STRUCTURED_SYSTEM_PROMPT.includes("ONE flowing prompt"));
+  assert.ok(!STRUCTURED_SYSTEM_PROMPT.includes("800 characters"));
+});
+
+/* ---------------- 档位拼装 ---------------- */
+
+test("默认档位 = 标准紧凑，基线不被档位/场景段污染", () => {
+  assert.equal(buildSystemPrompt(false), SYSTEM_PROMPT);
+  assert.equal(buildSystemPrompt(false, { intensity: "standard", scene: "general" }), SYSTEM_PROMPT);
+});
+
+test("deep 档 = 结构化骨架 + 深度段", () => {
+  const s = buildSystemPrompt(false, { intensity: "deep" });
+  assert.ok(s.length > SYSTEM_PROMPT.length);
+  assert.ok(/Depth setting: deep/.test(s));
+  assert.ok(/boundary conditions/.test(s));
+  assert.ok(/placeholder/.test(s), "深度档也必须保留防臆造护栏");
+  assert.ok(/not more words of praise/.test(s), "深度是结构不是废话");
+  assert.ok(!s.includes("ONE flowing prompt"), "deep 不应混入紧凑形态指令");
+});
+
+test("场景段只作用于深度档（单段形态里塞场景指令会长出结构）", () => {
+  assert.equal(buildSystemPrompt(false, { scene: "code" }), SYSTEM_PROMPT, "标准档不接受场景段");
+  const d = buildSystemPrompt(false, { intensity: "deep", scene: "code" });
+  assert.ok(/Scene setting: code work/.test(d));
+  // 场景段不得破坏骨架
+  for (const kw of ["Role and goal", "Steps", "Acceptance criteria"]) {
+    assert.ok(d.includes(kw));
+  }
+});
+
+test("非法强度值回落标准紧凑", () => {
+  assert.equal(buildSystemPrompt(false, { intensity: "turbo" }), SYSTEM_PROMPT);
+  assert.equal(buildSystemPrompt(false, { intensity: 123 }), SYSTEM_PROMPT);
+  assert.equal(buildSystemPrompt(false, {}), SYSTEM_PROMPT);
+});
+
+test("上下文段两档都拼装、且永远在最后", () => {
+  assert.equal(buildSystemPrompt(true), SYSTEM_PROMPT + "\n" + CONTEXT_SYSTEM_ADDITION);
+  const d = buildSystemPrompt(true, { intensity: "deep" });
+  assert.ok(d.endsWith(CONTEXT_SYSTEM_ADDITION));
+  assert.ok(d.includes("Conversation context"));
+});
+
+test("强度与场景可叠加，上下文段仍在最后", () => {
+  const s = buildSystemPrompt(true, { intensity: "deep", scene: "code" });
+  assert.ok(/Scene setting: code work/.test(s));
+  assert.ok(/Depth setting: deep/.test(s));
+  assert.ok(s.indexOf("Conversation context") > s.indexOf("Depth setting: deep"));
+});
+
+/* ---------------- frameUserPrompt / 示例 ---------------- */
 
 test("frameUserPrompt 包裹 raw_prompt 并带中文指令", () => {
   const s = frameUserPrompt("帮我写个函数");
@@ -50,11 +154,51 @@ test("frameUserPrompt 带上下文时转义 conversation_context", () => {
   assert.ok(s.includes("<\\/conversation_context>"));
 });
 
-test("无上下文时 system prompt 不含上下文段", () => {
-  assert.equal(buildSystemPrompt(false), SYSTEM_PROMPT);
-  assert.ok(buildSystemPrompt(true).length > SYSTEM_PROMPT.length);
-  assert.ok(buildSystemPrompt(true).includes("Conversation context"));
+test("三语示例均为单句紧凑形态，同时服务两档", () => {
+  assert.ok(BAD_GOOD_EXAMPLES.includes("GOOD OUTPUT EXAMPLE (Chinese)"));
+  assert.ok(BAD_GOOD_EXAMPLES.includes("GOOD OUTPUT EXAMPLE (English)"));
+  assert.ok(BAD_GOOD_EXAMPLES.includes("mixed input, mixed output"));
+  assert.ok(BAD_GOOD_EXAMPLES.includes("BAD OUTPUT EXAMPLE"));
 });
+
+/* ---------------- 场景判定 ---------------- */
+
+test("场景判定：代码草稿路由到 code", () => {
+  assert.equal(classifyScene("帮我修一下这个 bug，函数返回 undefined"), "code");
+  assert.equal(classifyScene("```js\nconst a = 1\n```"), "code");
+});
+
+test("场景判定：数据草稿路由到 data", () => {
+  assert.equal(classifyScene("帮我做一个 Excel 透视表，按字段汇总"), "data");
+});
+
+test("场景判定：文档草稿路由到 doc", () => {
+  assert.equal(classifyScene("帮我写一份需求说明文档的大纲"), "doc");
+});
+
+test("场景判定：无信号回落 general", () => {
+  assert.equal(classifyScene("我想做一个更有意思的东西"), "general");
+  assert.equal(classifyScene(""), "general");
+});
+
+test("场景判定：代码信号优先于文档信号", () => {
+  // "给这个接口写文档" 的产物是代码注释/接口说明，应走 code 而非 doc
+  assert.equal(classifyScene("给这个接口写文档，说明函数入参"), "code");
+});
+
+test("场景判定：可指定无信号时的回落场景", () => {
+  assert.equal(classifyScene("随便做点什么", "doc"), "doc");
+  assert.equal(classifyScene("随便做点什么", "bogus"), "general");
+});
+
+test("normalizeOptions 对脏值一律回落默认", () => {
+  assert.deepEqual(normalizeOptions({ intensity: "deep", scene: "data" }), { intensity: "deep", scene: "data" });
+  assert.deepEqual(normalizeOptions({ intensity: "x", scene: "y" }), { intensity: "standard", scene: "general" });
+  assert.deepEqual(normalizeOptions(), { intensity: "standard", scene: "general" });
+  assert.deepEqual(normalizeOptions(null), { intensity: "standard", scene: "general" });
+});
+
+/* ---------------- 清洗与计数（不变） ---------------- */
 
 test("清洗：剥掉恰好一对的代码围栏", () => {
   assert.equal(cleanEnhancedText("```text\n你好世界\n```"), "你好世界");
@@ -107,133 +251,4 @@ test("countChars 按 code point 计数", () => {
 
 test("输入上限是 12000", () => {
   assert.equal(MAX_INPUT_CHARS, 12000);
-});
-
-/* ---------------- v0.5.0：对标 WorkBuddy 的提示词强化 ---------------- */
-
-test("system prompt 含 WorkBuddy 式实质增强要求", () => {
-  assert.ok(
-    SYSTEM_PROMPT.includes("Always deliver a substantive improvement"),
-    "必须有'必须实质增强'的硬约束，否则清晰草稿上点 ✨ 会没有任何变化"
-  );
-  assert.ok(
-    /Never return it unchanged in substance/.test(SYSTEM_PROMPT),
-    "必须显式禁止'原样返回'"
-  );
-});
-
-test("实质增强同时带护栏：不得引入新需求", () => {
-  assert.ok(
-    /do not import new requirements to manufacture a difference/i.test(SYSTEM_PROMPT),
-    "必须防止为了'看起来改过'而编造需求"
-  );
-  assert.ok(SYSTEM_PROMPT.includes("(待补充：…)"), "防臆造占位符仍在");
-});
-
-test("system prompt 要求输出收尾完整", () => {
-  assert.ok(
-    /unfinished list item/.test(SYSTEM_PROMPT),
-    "必须禁止以未完成的列表项结尾"
-  );
-  assert.ok(/trailing colon or comma/.test(SYSTEM_PROMPT), "必须禁止以冒号/逗号收尾");
-  assert.ok(/dangling conjunction/.test(SYSTEM_PROMPT), "必须禁止以悬空连接词收尾");
-});
-
-test("system prompt 声明 WHAT 而非 HOW，且不替用户答题", () => {
-  assert.ok(/Describe WHAT the result must be, not HOW/.test(SYSTEM_PROMPT));
-  assert.ok(/do not answer it/i.test(SYSTEM_PROMPT), "必须声明'扩展请求而非回答请求'");
-  assert.ok(
-    /Never prescribe tools, libraries, frameworks/.test(SYSTEM_PROMPT),
-    "必须禁止擅自指定技术栈"
-  );
-});
-
-test("示例覆盖中文 / 英文 / 混排三种输入形态", () => {
-  assert.ok(BAD_GOOD_EXAMPLES.includes("GOOD OUTPUT EXAMPLE (Chinese)"));
-  assert.ok(BAD_GOOD_EXAMPLES.includes("GOOD OUTPUT EXAMPLE (English)"));
-  assert.ok(BAD_GOOD_EXAMPLES.includes("mixed input, mixed output"));
-  assert.ok(BAD_GOOD_EXAMPLES.includes("BAD OUTPUT EXAMPLE"));
-});
-
-/* ---------------- 强度档位 ---------------- */
-
-test("默认强度 standard 不改变基线提示词", () => {
-  assert.equal(buildSystemPrompt(false), SYSTEM_PROMPT);
-  assert.equal(buildSystemPrompt(false, { intensity: "standard", scene: "general" }), SYSTEM_PROMPT);
-});
-
-test("deep 档追加边界条件与验收要求", () => {
-  const s = buildSystemPrompt(false, { intensity: "deep" });
-  assert.ok(s.length > SYSTEM_PROMPT.length);
-  assert.ok(/Depth setting: deep/.test(s));
-  assert.ok(/boundary conditions/.test(s));
-  assert.ok(/placeholder/.test(s), "深度档也必须保留防臆造护栏");
-});
-
-test("deep 档强调'深度是结构不是废话'", () => {
-  const s = buildSystemPrompt(false, { intensity: "deep" });
-  assert.ok(/not more words of praise/.test(s));
-});
-
-test("非法强度值回落 standard", () => {
-  assert.equal(buildSystemPrompt(false, { intensity: "turbo" }), SYSTEM_PROMPT);
-  assert.equal(buildSystemPrompt(false, { intensity: 123 }), SYSTEM_PROMPT);
-  assert.equal(buildSystemPrompt(false, {}), SYSTEM_PROMPT);
-});
-
-/* ---------------- 场景路由 ---------------- */
-
-test("场景判定：代码草稿路由到 code", () => {
-  assert.equal(classifyScene("帮我修一下这个 bug，函数返回 undefined"), "code");
-  assert.equal(classifyScene("```js\nconst a = 1\n```"), "code");
-});
-
-test("场景判定：数据草稿路由到 data", () => {
-  assert.equal(classifyScene("帮我做一个 Excel 透视表，按字段汇总"), "data");
-});
-
-test("场景判定：文档草稿路由到 doc", () => {
-  assert.equal(classifyScene("帮我写一份需求说明文档的大纲"), "doc");
-});
-
-test("场景判定：无信号回落 general", () => {
-  assert.equal(classifyScene("我想做一个更有意思的东西"), "general");
-  assert.equal(classifyScene(""), "general");
-});
-
-test("场景判定：代码信号优先于文档信号", () => {
-  // "给这个接口写文档" 的产物是代码注释/接口说明，应走 code 而非 doc
-  assert.equal(classifyScene("给这个接口写文档，说明函数入参"), "code");
-});
-
-test("场景判定：可指定无信号时的回落场景", () => {
-  assert.equal(classifyScene("随便做点什么", "doc"), "doc");
-  assert.equal(classifyScene("随便做点什么", "bogus"), "general");
-});
-
-test("场景段只调整步骤与验收措辞，不改六段式骨架", () => {
-  const s = buildSystemPrompt(false, { scene: "code" });
-  for (const kw of ["Role and goal", "Context and constraints", "Steps", "Output format", "Acceptance criteria", "Boundary conditions"]) {
-    assert.ok(s.includes(kw), `场景增强后仍须保留六段式: ${kw}`);
-  }
-  assert.ok(/Scene setting: code work/.test(s));
-});
-
-test("general 场景不追加任何内容", () => {
-  assert.equal(buildSystemPrompt(false, { scene: "general" }), SYSTEM_PROMPT);
-});
-
-test("强度与场景可叠加，且上下文段仍在最后", () => {
-  const s = buildSystemPrompt(true, { intensity: "deep", scene: "code" });
-  assert.ok(/Scene setting: code work/.test(s));
-  assert.ok(/Depth setting: deep/.test(s));
-  assert.ok(/Conversation context/.test(s));
-  assert.ok(s.indexOf("Conversation context") > s.indexOf("Depth setting: deep"));
-});
-
-test("normalizeOptions 对脏值一律回落默认", () => {
-  assert.deepEqual(normalizeOptions({ intensity: "deep", scene: "data" }), { intensity: "deep", scene: "data" });
-  assert.deepEqual(normalizeOptions({ intensity: "x", scene: "y" }), { intensity: "standard", scene: "general" });
-  assert.deepEqual(normalizeOptions(), { intensity: "standard", scene: "general" });
-  assert.deepEqual(normalizeOptions(null), { intensity: "standard", scene: "general" });
 });

@@ -28,27 +28,32 @@ English | [简体中文](README.md)
 
 ### Enhancement depth
 
-| Level | Bias | Good for |
+| Level | Shape | Good for |
 |---|---|---|
-| **Standard** (default) | Precision first — stop as soon as the request is unambiguous | Everyday prompts, quick rewrites |
-| **Deep** | Spell out boundary conditions, failure handling, and checkable acceptance | Complex tasks, requirements handed to someone else |
+| **Standard** (default) | Compact rewrite: one flowing sentence close to your own voice, ≤ 800 chars | Chat inputs, everyday prompts |
+| **Deep** | Six-part structured skeleton: role / constraints / steps / output / acceptance / boundaries | Complex tasks, requirements handed to someone else |
 
+Standard matches WorkBuddy's measured behaviour: sharpen the sentence you meant to write instead
+of writing a specification on your behalf. The implicit dimensions, deliverable, and judgement
+criteria are woven into one sentence ("first … then … and …"); vague references become precise
+qualifiers ("其它项目" → "指定的其它同类项目"); no placeholder blocks, no section headers.
 Deep is not "longer text": the prompt explicitly asks for more structure and precision, and keeps
 the `(TBD: …)` placeholder rule — unknown details are still not invented.
 
-### Scene templates
+### Scene templates (deep mode only)
 
 Drafts are routed to a **code / data / doc** template by their signals. Only the wording of the
 *steps* and *acceptance* sections changes; the six-part skeleton stays intact. When no signal is
 found, the generic template is used (identical to no scene enhancement at all).
+Standard never gets a scene section — scene instructions would grow structure back into the
+single-paragraph shape.
 Pin a scene with `scene` in `config.json`, or turn the routing off with `scene_auto: false`.
 
 ### Rewrite strategy
 
-The model fills a six-part skeleton: role and goal, context and constraints, steps, output format,
-acceptance criteria, boundary conditions.
-
-Three hard rules keep the result usable:
+Deep fills a six-part skeleton: role and goal, context and constraints, steps, output format,
+acceptance criteria, boundary conditions; standard is a single-paragraph compact rewrite.
+The hard rules below are shared by both shapes:
 
 1. **Never fabricate.** Unknown but needed details become `(TBD: …)` placeholders instead of invented facts.
 2. **Match the language.** Chinese in → Chinese prompt, English in → English prompt, mixed stays mixed.

@@ -639,8 +639,8 @@
     intensityBtn.textContent = intensityLabel(state.intensity);
     intensityBtn.title =
       state.intensity === "deep"
-        ? "当前：深度（补齐边界条件与验收标准）— 点击切回标准"
-        : "当前：标准（精度优先）— 点击切到深度";
+        ? "当前：深度（六段式结构化）— 点击切回标准"
+        : "当前：标准（紧凑改写，贴近原句）— 点击切到深度";
     intensityBtn.setAttribute("aria-label", intensityBtn.title);
     intensityBtn.style.opacity = busy ? ".35" : ".75";
     intensityBtn.style.cursor = busy ? "not-allowed" : "pointer";
@@ -1611,8 +1611,8 @@
     renderButtons();
     showToast(
       state.intensity === "deep"
-        ? "已切到深度：会补齐边界条件与验收标准"
-        : "已切到标准：精度优先，输出更紧凑",
+        ? "已切到深度：六段式结构化，补齐边界与验收"
+        : "已切到标准：紧凑改写，保持原句形态",
       2400
     );
   });
