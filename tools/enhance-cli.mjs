@@ -110,8 +110,12 @@ async function main() {
     draft = await readStdin(cfg.max_input_chars * 6 + 4096);
   }
 
+  /* 空值判定必须与 core 一致：enhanceDraft 用的是 trim() 后判空，
+   * 这里若只数 code point，"   \n\t" 会被当成 5 字合法草稿发出去，
+   * 直到模型层才报"草稿为空"—— 白白烧一次额度，且离线环境下的报错
+   * 会先撞上 provider 配置检查，把真正的错误原因盖掉。 */
+  if (draft.trim() === "") return fail("empty", "草稿为空（可传位置参数、--file 或 stdin）");
   const charCount = countChars(draft);
-  if (charCount === 0) return fail("empty", "草稿为空（可传位置参数、--file 或 stdin）");
   if (charCount > cfg.max_input_chars) {
     return fail("too-long", `草稿过长：${charCount} 字（上限 ${cfg.max_input_chars}，config.json 的 max_input_chars）`);
   }

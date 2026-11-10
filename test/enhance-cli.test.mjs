@@ -45,8 +45,21 @@ test("CLI：空草稿（stdin 空）→ 退出码 1，提示草稿为空，不�
 
 test("CLI：全空白草稿 → 退出码 1", () => {
   const r = runCli("   \n\t\n");
-  assert.equal(r.status, 1);
-  assert.ok(r.stderr.includes("草稿为空"));
+  assert.equal(r.status, 1, `stderr: ${r.stderr}`);
+  assert.ok(r.stderr.includes("草稿为空"), `stderr: ${r.stderr}`);
+});
+
+test("CLI：全空白草稿必须在发请求前就失败（不依赖本机 provider 配置）", () => {
+  /* 回归锚点：曾只用 charCount === 0 判空，"   \n\t" 会当成合法草稿，
+   * 先去查 provider 配置 —— CI 上没有该配置时先报 unsupported 把真实原因盖掉，
+   * 本机则真的发一次网络请求。正确行为是 trim() 后判空、立刻失败：
+   * stderr 里只有"草稿为空"，不出现"增强中"（说明没进入请求阶段）。 */
+  const r = runCli("   \n\t\n");
+  assert.equal(r.status, 1, `stderr: ${r.stderr}`);
+  assert.ok(r.stderr.includes("草稿为空"), `stderr: ${r.stderr}`);
+  assert.ok(!r.stderr.includes("增强中"), "空白草稿不应进入请求阶段：" + r.stderr);
+  assert.ok(!r.stderr.includes("未找到 provider 配置"), "空值判定必须先于配置检查：" + r.stderr);
+  assert.equal(r.stdout, "");
 });
 
 test("CLI：超长草稿（--file）→ 退出码 1，提示过长与上限值", () => {
