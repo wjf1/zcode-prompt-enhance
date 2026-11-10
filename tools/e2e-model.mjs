@@ -7,7 +7,7 @@ if (!cfg) {
   console.error("provider_config.json 读不到");
   process.exit(1);
 }
-const route = resolveRoute(cfg, { provider: "new-provider-2", model: "cn:deepseek-v4.1-flash" });
+const route = resolveRoute(cfg, { provider: "new-provider-4", model: "cn:deepseek-v4.1-flash" });
 if (!route) {
   console.error("no route");
   process.exit(1);

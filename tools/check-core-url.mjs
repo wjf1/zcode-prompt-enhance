@@ -16,6 +16,8 @@ const targets = [
   "core/trust.mjs",
   "core/context.mjs",
   "core/versioncheck.mjs",
+  "core/prompt.mjs",
+  "core/quality.mjs",
 ];
 
 let bad = 0;

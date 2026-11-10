@@ -10,6 +10,7 @@
  */
 
 import { buildSystemPrompt, frameUserPrompt, cleanEnhancedText } from "./prompt.mjs";
+import { assessQuality } from "./quality.mjs";
 
 export const DEFAULT_TIMEOUT_MS = 60000;
 export const MAX_OUTPUT_TOKENS = 2048;
@@ -28,6 +29,9 @@ export const ERROR_CODES = {
   timeout: { status: 504, retryable: true, zh: "请求超时" },
   aborted: { status: 499, retryable: false, zh: "已取消" },
   "too-long": { status: 413, retryable: false, zh: "草稿过长，请精简后重试" },
+  "not-changed": { status: 502, retryable: true, zh: "模型没有产生实质改动，请重试" },
+  truncated: { status: 502, retryable: true, zh: "输出不完整（结尾被截断），请重试" },
+  shrunk: { status: 502, retryable: true, zh: "增强结果比原文更简短，可能丢失信息" },
   unsupported: { status: 503, retryable: false, zh: "当前没有可用的增强模型配置" },
   internal: { status: 502, retryable: true, zh: "增强失败，请稍后重试" },
 };
@@ -102,15 +106,21 @@ async function nextOrAbort(iterator, signal, getAbortCode) {
  * @param {{baseUrl:string, apiKey:string, model:string}} opts.route
  * @param {string} opts.draft 用户草稿
  * @param {string} [opts.context] 已装配的对话上下文
+ * @param {"standard"|"deep"} [opts.intensity] 增强强度档位
+ * @param {"code"|"data"|"doc"|"general"} [opts.scene] 场景模板
+ * @param {boolean} [opts.qualityCheck] 是否做输出质量判定（默认 true）
  * @param {AbortSignal} [opts.signal]
  * @param {number} [opts.timeoutMs]
  * @param {Function} [opts.fetchImpl] 便于测试注入
- * @returns {Promise<{text:string, usage?:object}>}
+ * @returns {Promise<{text:string, usage?:object, warnings?:object[]}>}
  */
 export async function enhanceDraft({
   route,
   draft,
   context,
+  intensity,
+  scene,
+  qualityCheck = true,
   signal,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
@@ -123,7 +133,7 @@ export async function enhanceDraft({
   if (text.trim() === "") throw new EnhanceError("empty", "草稿为空");
 
   const hasContext = typeof context === "string" && context !== "";
-  const sys = buildSystemPrompt(hasContext);
+  const sys = buildSystemPrompt(hasContext, { intensity, scene });
   const userMsg = frameUserPrompt(text, hasContext ? context : undefined);
 
   const ac = new AbortController();
@@ -248,6 +258,16 @@ export async function enhanceDraft({
     if (finishReason === "max_tokens") throw new EnhanceError("max-tokens");
     const cleaned = cleanEnhancedText(raw);
     if (cleaned === "") throw new EnhanceError("empty");
+
+    /* 输出质量判定：把"点了没变化 / 输出断在半句 / 信息量缩水"
+     * 从模糊的 empty（或干脆静默通过）变成可归因的结果。
+     * 阻断级问题抛 EnhanceError，让 UI 走既有错误通道；
+     * 警告级问题随成功结果一起回传，由浮层决定是否提示。 */
+    if (qualityCheck) {
+      const { blocking, warnings } = assessQuality(text, cleaned);
+      if (blocking) throw new EnhanceError(blocking.code, blocking.detail);
+      if (warnings.length) return { text: cleaned, usage, warnings };
+    }
     return { text: cleaned, usage };
   } catch (err) {
     if (err instanceof EnhanceError) {
